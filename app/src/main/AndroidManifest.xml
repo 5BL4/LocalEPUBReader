@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      FOREGROUND_SERVICE_MEDIA_PLAYBACK declared now (NEVER #10).
+      The foregroundServiceType="mediaPlayback" service element and the
+      Notification Channel registration arrive in Phase 6 (TTS). The
+      permission alone satisfies the never-rule and causes no issues.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <application
+        android:name=".EpubReaderApplication"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.EpubReader">
+
+        <!-- Launcher Activity + Compose UI arrive in Phase 2 (Bookshelf). -->
+
+    </application>
+
+</manifest>

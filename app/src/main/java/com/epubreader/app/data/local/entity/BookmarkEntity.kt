@@ -1,0 +1,36 @@
+package com.epubreader.app.data.local.entity
+
+import androidx.room.Entity
+import androidx.room.ForeignKey
+import androidx.room.Index
+import androidx.room.PrimaryKey
+import com.epubreader.app.core.Syncable
+
+@Entity(
+    tableName = "bookmarks",
+    foreignKeys = [
+        ForeignKey(
+            entity = BookEntity::class,
+            parentColumns = ["uuid"],
+            childColumns = ["bookUuid"],
+            onDelete = ForeignKey.NO_ACTION
+        )
+    ],
+    indices = [
+        Index("bookUuid"),
+        Index("updatedAt"),
+        Index("syncedAt"),
+        Index("isDeleted")
+    ]
+)
+data class BookmarkEntity(
+    @PrimaryKey override val uuid: String,
+    val bookUuid: String,
+    val locator: String,
+    val label: String? = null,
+    override val createdAt: Long,
+    override val updatedAt: Long,
+    override val isDeleted: Boolean,
+    override val syncedAt: Long? = null,
+    val userId: String? = null
+) : Syncable
