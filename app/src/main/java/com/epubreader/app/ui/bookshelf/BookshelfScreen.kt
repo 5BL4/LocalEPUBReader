@@ -72,6 +72,7 @@ fun BookshelfScreen(
     }
 
     // Delete confirmation state
+    var bookContextMenuUuid by remember { mutableStateOf<String?>(null) }
     var bookToDelete by remember { mutableStateOf<String?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -154,7 +155,7 @@ fun BookshelfScreen(
                         BookCard(
                             book = book,
                             onClick = { onBookClick(book.uuid) },
-                            onLongClick = { bookToDelete = book.uuid }
+                            onLongClick = { bookContextMenuUuid = book.uuid }
                         )
                     }
                 }
@@ -193,6 +194,31 @@ fun BookshelfScreen(
             confirmButton = {
                 TextButton(onClick = { viewModel.cancelImport() }) {
                     Text(stringResource(R.string.bookshelf_cancel))
+                }
+            }
+        )
+    }
+
+    // Context menu dialog (long-press)
+    bookContextMenuUuid?.let { uuid ->
+        AlertDialog(
+            onDismissRequest = { bookContextMenuUuid = null },
+            title = { Text(stringResource(R.string.bookshelf_delete)) },
+            text = { Text(stringResource(R.string.bookshelf_delete_confirm_message)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    bookContextMenuUuid = null
+                    bookToDelete = uuid
+                }) {
+                    Text(stringResource(R.string.bookshelf_delete))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.reparseMetadata(uuid)
+                    bookContextMenuUuid = null
+                }) {
+                    Text(stringResource(R.string.bookshelf_reparse_metadata))
                 }
             }
         )

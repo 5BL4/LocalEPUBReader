@@ -6,7 +6,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.epubreader.app.ui.bookshelf.BookshelfScreen
-import com.epubreader.app.ui.reader.ReaderPlaceholderScreen
+import com.epubreader.app.ui.reader.ReaderScreen
 
 @Composable
 fun EpubReaderNavHost() {
@@ -19,7 +19,7 @@ fun EpubReaderNavHost() {
         }
         composable<ReaderRoute> { backStackEntry ->
             val route = backStackEntry.toRoute<ReaderRoute>()
-            ReaderPlaceholderScreen(
+            ReaderScreen(
                 bookUuid = route.bookUuid,
                 onBack = { navController.popBackStack() }
             )

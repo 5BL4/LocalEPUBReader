@@ -9,6 +9,7 @@ import com.epubreader.app.core.AppError
 import com.epubreader.app.core.ErrorChannel
 import com.epubreader.app.core.StringProvider
 import com.epubreader.app.core.fold
+import com.epubreader.app.core.onFailure
 import com.epubreader.app.data.bookimport.BookImporter
 import com.epubreader.app.data.bookimport.InsufficientStorageException
 import com.epubreader.app.data.local.entity.BookEntity
@@ -87,6 +88,17 @@ class BookshelfViewModel @Inject constructor(
     fun resetImportState() {
         _importState.value = ImportState.Idle
         _importProgress.value = 0f
+    }
+
+    fun reparseMetadata(uuid: String) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            val result = bookRepository.reparseMetadata(uuid)
+            result.onFailure { cause, msg ->
+                errorChannel.tryEmit(
+                    AppError(msg ?: cause.message ?: "Reparse failed", cause)
+                )
+            }
+        }
     }
 
     fun softDeleteBook(uuid: String) {

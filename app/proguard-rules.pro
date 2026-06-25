@@ -16,3 +16,10 @@
 
 # Keep entity/DAO class names for reflection-free Room access.
 -keep class com.epubreader.app.data.local.entity.** { *; }
+
+# Readium v3 keep rules (Phase 3)
+-keep class org.readium.r2.shared.** { *; }
+-keep class org.readium.r2.streamer.** { *; }
+-keep class org.readium.r2.navigator.** { *; }
+-dontwarn org.readium.r2.**
+-keep @androidx.annotation.Keep class * { *; }

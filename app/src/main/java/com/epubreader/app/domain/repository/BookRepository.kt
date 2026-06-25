@@ -10,4 +10,5 @@ interface BookRepository {
     suspend fun getBook(uuid: String): Result<BookEntity?>
     suspend fun addBook(book: BookEntity): Result<Unit>
     suspend fun softDeleteBook(uuid: String): Result<Unit>
+    suspend fun reparseMetadata(uuid: String): Result<BookEntity>
 }

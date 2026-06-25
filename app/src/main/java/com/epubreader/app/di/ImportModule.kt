@@ -2,8 +2,8 @@ package com.epubreader.app.di
 
 import com.epubreader.app.data.bookimport.BookImporter
 import com.epubreader.app.data.bookimport.EpubBookImporter
-import com.epubreader.app.data.bookimport.FilenameMetadataParser
 import com.epubreader.app.data.bookimport.MetadataParser
+import com.epubreader.app.data.bookimport.ReadiumMetadataParser
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -18,5 +18,5 @@ abstract class ImportModule {
     abstract fun bindBookImporter(impl: EpubBookImporter): BookImporter
 
     @Binds @Singleton
-    abstract fun bindMetadataParser(impl: FilenameMetadataParser): MetadataParser
+    abstract fun bindMetadataParser(impl: ReadiumMetadataParser): MetadataParser
 }
