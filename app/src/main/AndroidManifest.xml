@@ -17,7 +17,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.EpubReader">
 
-        <!-- Launcher Activity + Compose UI arrive in Phase 2 (Bookshelf). -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.EpubReader">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
     </application>
 

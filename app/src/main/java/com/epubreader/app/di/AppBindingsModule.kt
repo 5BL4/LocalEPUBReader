@@ -1,7 +1,9 @@
 package com.epubreader.app.di
 
+import com.epubreader.app.core.AndroidStringProvider
 import com.epubreader.app.core.DefaultDispatchersProvider
 import com.epubreader.app.core.DispatchersProvider
+import com.epubreader.app.core.StringProvider
 import com.epubreader.app.data.prefs.PreferencesRepository
 import com.epubreader.app.data.prefs.PreferencesRepositoryImpl
 import com.epubreader.app.data.remote.NoopRemoteDataSource
@@ -28,6 +30,9 @@ abstract class AppBindingsModule {
 
     @Binds @Singleton
     abstract fun bindDispatchersProvider(impl: DefaultDispatchersProvider): DispatchersProvider
+
+    @Binds @Singleton
+    abstract fun bindStringProvider(impl: AndroidStringProvider): StringProvider
 
     @Binds @Singleton
     abstract fun bindRemoteDataSource(impl: NoopRemoteDataSource): RemoteDataSource

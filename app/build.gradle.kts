@@ -65,6 +65,7 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons.extended)
     implementation(libs.compose.foundation)
     debugImplementation(libs.compose.ui.tooling)
 
@@ -96,6 +97,9 @@ dependencies {
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
+
+    // Immutable collections (PersistentList for @Immutable UiState — architect note)
+    implementation(libs.kotlinx.collections.immutable)
 
     // DataStore (Preferences only in Phase 1; Proto toolchain deferred per S6)
     implementation(libs.datastore.preferences)

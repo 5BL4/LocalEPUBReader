@@ -1,3 +1,16 @@
 <resources>
     <string name="app_name">EpubReader</string>
+    <string name="bookshelf_title">Bookshelf</string>
+    <string name="bookshelf_empty">No books yet. Tap + to import an EPUB.</string>
+    <string name="bookshelf_import">Import EPUB</string>
+    <string name="bookshelf_importing">Importing…</string>
+    <string name="bookshelf_import_success">Import complete</string>
+    <string name="bookshelf_import_error">Import failed: %1$s</string>
+    <string name="bookshelf_cancel">Cancel</string>
+    <string name="bookshelf_delete">Delete</string>
+    <string name="bookshelf_delete_confirm_message">Remove this book from your library?</string>
+    <string name="error_insufficient_storage">Not enough storage space to import this book.</string>
+    <string name="error_import_failed">Import failed. Please try again.</string>
+    <string name="reader_placeholder">Reader coming in Phase 3</string>
+    <string name="action_back">Back</string>
 </resources>
