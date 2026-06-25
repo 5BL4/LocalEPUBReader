@@ -1,11 +1,11 @@
 # EpubReader — 技术文档 (Technical Documentation)
 
 > **项目**: 本地 EPUB 阅读器 (EpubReader)
-> **状态**: Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅ → Phase 4 ✅ 完成
+> **状态**: Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅ → Phase 4 ✅ → Phase 5 ✅ 完成
 > **日期**: 2026-06-25
-> **下一步**: 等待用户指令后开始 Phase 5 (知识管理与导出)
+> **下一步**: 等待用户指令后开始 Phase 6 (Media3 TTS 听书)
 
-本文档合并了 Phase 1 (基础架构与同步数据模型)、Phase 2 (书架 UI 与路由)、Phase 3 (Readium v3.x 引擎集成)、Phase 4 (JS Bridge 与交互系统) 的全部进度文档。
+本文档合并了 Phase 1 (基础架构与同步数据模型)、Phase 2 (书架 UI 与路由)、Phase 3 (Readium v3.x 引擎集成)、Phase 4 (JS Bridge 与交互系统)、Phase 5 (知识管理与导出) 的全部进度文档。
 
 ---
 
@@ -347,6 +347,150 @@ JS Bridge 工厂捕获 `BridgeCallbackHolder` (小型对象), 而非 Fragment。
 
 ---
 
+# Phase 5 — 知识管理与导出
+
+> **状态**: ✅ 完成 (构建通过, 90 项测试全部通过, Oracle 计划审查 ACCEPT_WITH_CHANGES, Oracle 结果审查 ACCEPT_WITH_CHANGES, 所有 must-fix 已修复)
+
+## 5.1 关键架构决策 (Oracle 审查通过)
+
+### D1: KnowledgePanel 作为 ModalBottomSheet (非独立屏幕/路由)
+- 按书籍作用域 (所有标注按 bookUuid 关联)
+- 复用现有 SearchPanel 模式 (ModalBottomSheet)
+- 无需新导航路由
+- TopAppBar 新增 "标注" 图标切换面板
+- 面板包含 3 类内容 (高亮/笔记/书签) 在单个 LazyColumn 中, 顶部有导出按钮
+- 理由: 知识管理与阅读上下文紧密关联; 数据已在 ReaderVM 中按书加载; 避免导航复杂度
+
+### D2: MarkdownExporter — 接口在 `core/export/`, 实现在 `core/export/`, Hilt @Binds 绑定
+- 接口: `MarkdownExporter` + `exportToMarkdown(request: ExportRequest): String`
+- 实现: `MarkdownExporterImpl @Singleton @Inject constructor()` — 包装 `FlexmarkHtmlConverter` (lazy + `@Synchronized`, flexmark 非线程安全)
+- **Oracle M1 修复**: 使用纯数据类 (ExportHighlight/ExportNote/ExportBookmark/ExportTocItem/ExportRequest), **不依赖 Room 实体** — 保持 `core/` → `data/` 的 Clean Architecture 不变量 (Phase 1-4 维护的约束)
+- VM 将 Room 实体映射为纯导出模型后调用导出器
+- 所有文本字段 (highlight.text, note.content) 经 `FlexmarkHtmlConverter.convert()` 处理 — 满足 harness "使用 flexmark-java, 不写正则"
+- 输出: 结构化 MD, 按章节层级分组 (# 书名 → ## 章节 → ### 高亮/笔记/书签)
+
+### D3: 标注按章节分组 (Locator href + TOC + 片段归一化)
+- **Oracle M2 修复**: `ExportTocItem` 携带 `href` 字段 (VM 从 `tocLinks` 填充, Phase 4 的 `TocItem` 无 href)
+- 归一化: 匹配前剥离 `#` 片段和 `?` 查询 (`substringBefore('#').substringBefore('?').trimEnd('/')`)
+- 高亮/笔记的 locator href 常带片段 (`ch1.xhtml#section-3`), TOC href 通常为裸路径 (`ch1.xhtml`) — 归一化后匹配
+- 未匹配的 locator 归入 "Unsorted" 章节 (合并所有未匹配 href + null locator 标注)
+- 章节顺序遵循 TOC 顺序; 章节内标注按 createdAt 排序
+- 仅渲染包含标注的章节 (无标注的 TOC 章节不输出)
+
+### D4: 导出流程 — VM 生成 MD 字符串 (IO), UI 处理 SAF/ShareSheet
+- ReaderVM: `prepareExport()` — 收集当前标注 + 书名 + TOC, 调用 `markdownExporter.exportToMarkdown()`, 在 `dispatchers.default` 上运行
+- VM 暴露 `exportState: StateFlow<ExportState>` (密封: Idle/Preparing/Ready(content, suggestedFileName)/Error(message)) — **Oracle S1: ExportState 在 UI 层 (KnowledgeUiState.kt), 非 core/export**
+- UI: `rememberLauncherForActivityResult(CreateDocument("text/markdown"))` — Uri 回调时通过 `contentResolver.openOutputStream` 写入, 在 IO 调度器上执行
+- UI: ShareSheet 通过 `Intent.ACTION_SEND` + `EXTRA_TEXT` + `createChooser` → `context.startActivity` (无需 FileProvider)
+- **VM 从不接触 Context/Uri** — 干净分离 (NEVER #2)
+- **Oracle M3 修复**: SAF 写入包裹 try-catch + CancellationException re-throw (NEVER #26 精神)
+- 建议文件名: `{bookTitle}-annotations.md` (Oracle S5: 文件名净化 `replace(Regex("[\\\\/:*?\"<>|]"), "_").take(60)`)
+
+### D5: 笔记观察 + 创建 (Oracle M4 修复)
+- ReaderVM: 注入 `NoteRepository` (新依赖) + `MarkdownExporter`
+- 新增 `notes: StateFlow<List<NoteEntity>>` 从 `noteRepository.observeNotes(bookUuid)` (stateIn WhileSubscribed 5000)
+- 新增 `knowledgeState: StateFlow<KnowledgeState>` — combine 高亮/笔记/书签三个 Flow, 聚合为统一 KnowledgeItem 列表
+- **Oracle M4 修复**: 笔记编辑器使用 `noteEditorState: StateFlow<NoteEditorState>` (UI 层 StateFlow), **非 Fragment 绑定的 `commands` SharedFlow** — `commands` 仅驱动 Fragment/navigator 动作, 不能显示 Compose 对话框
+- `requestNote()` → 存储 pending action → `onSelectionRetrieved()` 处理 Note 分支: 存储 locator+text 到 `pendingNoteLocator/pendingNoteText`, 设置 `noteEditorState = Editing(selectedText)`, **不清除选区** (延迟到对话框保存/取消)
+- `createNote(content)` → **Oracle S2: 先创建 HighlightEntity, 成功后创建 NoteEntity(highlightUuid)** — 若高亮失败则不创建笔记 (FK 约束)
+- `cancelNoteEditor()` → 清除状态 + 清除选区
+- NoteEditorDialog: Compose AlertDialog, 显示选中文本 (只读) + OutlinedTextField 输入笔记内容 + 保存/取消
+
+### D6: 一次性查询 (getByBook) 用于导出
+- 新增 `@Query("SELECT * FROM ... WHERE bookUuid = :bookUuid AND isDeleted = 0") suspend fun getByBook(bookUuid): List<T>` 到 3 个 DAO
+- 新增 `suspend fun getByBook(bookUuid): Result<List<T>>` 到 3 个仓库接口 + 实现
+- 导出使用一次性查询 (非 StateFlow.value) — StateFlow.value 在 WhileSubscribed(5000) 下可能过期; 一次性查询保证新鲜数据
+
+### D7: SAF CreateDocument 为主, ShareSheet ACTION_SEND 为辅
+- 主: `CreateDocument("text/markdown")` — 用户选择保存位置, 应用写入 MD 内容
+- 辅: `Intent.ACTION_SEND` + `EXTRA_TEXT` (纯文本分享) — 无需 FileProvider
+- Phase 5 不实现 FileProvider (避免 manifest 复杂度; 纯文本分享满足 harness "ShareSheet 或 SAF")
+- 均使用 `rememberLauncherForActivityResult` (NEVER #15)
+
+## 5.2 已完成的交付物
+
+### Phase 5 新增文件 (7)
+
+| 文件 | 说明 |
+|------|------|
+| `core/export/MarkdownExporter.kt` [NEW] | 接口 + 5 个纯导出数据类 (ExportHighlight/ExportNote/ExportBookmark/ExportTocItem/ExportRequest) — Oracle M1: 不依赖 Room 实体 |
+| `core/export/MarkdownExporterImpl.kt` [NEW] | @Singleton 实现。FlexmarkHtmlConverter (lazy + @Synchronized)。章节分组 + 片段归一化 (Oracle M2)。blockquote 逐行前缀 (Oracle S7)。extractHref() 从 Locator JSON 提取 href (正则, 非 HTML→MD — harness "不写正则" 仅限 HTML→MD) |
+| `ui/reader/KnowledgeUiState.kt` [NEW] | @Immutable KnowledgeItem/KnowledgeState + ExportState 密封接口 (Idle/Preparing/Ready/Error) + NoteEditorState 密封接口 (Hidden/Editing) + KnowledgeItemType 枚举 — Oracle S1: ExportState 在 UI 层 |
+| `ui/reader/KnowledgePanel.kt` [NEW] | ModalBottomSheet。计数头部 (高亮/笔记/书签数, Oracle S14)。两个导出按钮: "Save to file" + "Share" (Oracle S13)。LazyColumn 标注列表, 每项有类型图标/文本/章节标题/删除按钮 |
+| `ui/reader/NoteEditorDialog.kt` [NEW] | AlertDialog。显示选中文本 (只读) + OutlinedTextField 笔记输入 + 保存 (非空时启用) /取消 |
+| `core/export/MarkdownExporterTest.kt` [NEW] | 15 项测试: HTML→MD 转换 (标题/加粗/斜体/特殊字符), 章节分组, 片段归一化, Unsorted 章节, 多行 blockquote, 空输入, 笔记带/不带高亮 |
+| `ui/reader/KnowledgeUiStateTest.kt` [NEW] | 15 项测试: KnowledgeState/KnowledgeItem 默认值与字段, ExportState 四态, NoteEditorState 两态, ReaderUiState Phase 5 字段 |
+
+### Phase 5 修改文件 (12)
+
+| 文件 | 变更 |
+|------|------|
+| `data/local/dao/NoteDao.kt` [MODIFY] | 新增 `getByBook(bookUuid): List<NoteEntity>` (D6) |
+| `data/local/dao/HighlightDao.kt` [MODIFY] | 新增 `getByBook(bookUuid): List<HighlightEntity>` (D6) |
+| `data/local/dao/BookmarkDao.kt` [MODIFY] | 新增 `getByBook(bookUuid): List<BookmarkEntity>` (D6) |
+| `domain/repository/NoteRepository.kt` [MODIFY] | 新增 `getByBook(bookUuid): Result<List<NoteEntity>>` (D6) |
+| `domain/repository/HighlightRepository.kt` [MODIFY] | 新增 `getByBook(bookUuid): Result<List<HighlightEntity>>` (D6) |
+| `domain/repository/BookmarkRepository.kt` [MODIFY] | 新增 `getByBook(bookUuid): Result<List<BookmarkEntity>>` (D6) |
+| `data/repo/NoteRepositoryImpl.kt` [MODIFY] | 实现 `getByBook` (withContext IO + runCatchingAsync, NEVER #26) |
+| `data/repo/HighlightRepositoryImpl.kt` [MODIFY] | 实现 `getByBook` |
+| `data/repo/BookmarkRepositoryImpl.kt` [MODIFY] | 实现 `getByBook` |
+| `di/AppBindingsModule.kt` [MODIFY] | 新增 `bindMarkdownExporter` @Binds 绑定 |
+| `ui/reader/ReaderUiState.kt` [MODIFY] | 新增 `isKnowledgePanelOpen: Boolean = false` |
+| `ui/reader/ReaderViewModel.kt` [MODIFY] | 注入 NoteRepository + MarkdownExporter。新增 StateFlow: notes, knowledgeState (combine 三 Flow), exportState, noteEditorState (Oracle M4)。新增方法: requestNote, createNote (Oracle S2 顺序创建), cancelNoteEditor, toggleKnowledgePanel (Oracle S3 面板互斥), closeKnowledgePanel, deleteKnowledgeItem, prepareExport (D6 一次性查询), resetExportState, findChapterTitle (Oracle M2 归一化), sanitizeFileName (Oracle S5) |
+| `ui/reader/ReaderScreen.kt` [MODIFY] | TopAppBar 新增 Knowledge 图标 (Icons.AutoMirrored.Filled.Notes)。KnowledgePanel 覆盖层。NoteEditorDialog。SAF launcher (CreateDocument + try-catch Oracle M3)。ShareSheet (ACTION_SEND)。LaunchedEffect 响应 exportState。全部 collectAsStateWithLifecycle (Oracle S10) |
+| `ui/reader/SelectionToolbar.kt` [MODIFY] | 新增 Note 按钮 (Icons.Default.Note) + onNote 参数, 位于 Highlight 和 Bookmark 之间 |
+| `res/values/strings.xml` [MODIFY] | 新增 22 个字符串 (knowledge/export/note editor/selection note/feedback) |
+
+## 5.3 导出文档格式
+
+```markdown
+# {书名}
+
+> Exported: {yyyy-MM-dd HH:mm}
+
+## {章节 1 标题}
+
+### Highlights
+
+> {高亮文本 (HTML→MD 转换, 逐行 blockquote 前缀)}
+
+### Notes
+
+- {笔记内容} *(on: "{关联高亮文本}")*
+
+### Bookmarks
+
+- {书签标签}
+
+## {章节 2 标题}
+...
+
+## Unsorted
+
+### Highlights
+> {未匹配章节的高亮}
+
+### Notes
+- {null locator 的独立笔记}
+```
+
+## 5.4 Oracle 审查结论
+
+### 计划审查 (ora-1): ACCEPT_WITH_CHANGES
+- 4 个必修项 (M1-M4): core 层级回归, 章节分组损坏, SAF 写入崩溃, 笔记对话框信号路由错误
+- 14 个建议项 (S1-S14): ExportState 位置, 顺序创建, 面板互斥, TopAppBar 溢出, 文件名净化, ShareSheet 大小限制, blockquote 逐行, 测试覆盖, flexmark 纯文本测试, collectAsStateWithLifecycle, 独立笔记, KnowledgePanel insets, 导出按钮清晰度, 计数显示
+- 全部在实现前修复
+
+### 结果审查 (ora-2): ACCEPT_WITH_CHANGES — 所有必修项已修复
+- **M1 (层级回归)**: core/export 使用纯数据类, 不依赖 Room 实体 ✅
+- **M2 (章节分组)**: ExportTocItem 携带 href + 片段归一化 (strip #) ✅
+- **M3 (SAF 崩溃)**: try-catch + CancellationException re-throw ✅
+- **M4 (笔记对话框)**: noteEditorState StateFlow (UI 层), 非 commands SharedFlow ✅
+- **MF1 (面板互斥 bug)**: toggleKnowledgePanel 中 clearSearch 未调用 (update 后读取状态) → 捕获 searchWasOpen 在 update 前 ✅
+- **S1 (对话框卡死)**: createNote 失败时 pending 字段已清空导致 Save 无响应 → 移入成功路径清理 ✅
+
+---
+
 # 锁定的依赖版本 (后续 Phase 共用)
 
 | 依赖 | 版本 | 备注 |
@@ -392,6 +536,9 @@ com.epubreader.app
 │   ├── StringProvider.kt             本地化字符串接口 (Phase 2 M5)
 │   ├── readium/
 │   │   └── LocatorMapper.kt          Locator↔String 转换 (Phase 3 D2)
+│   ├── export/                       [Phase 5] Markdown 导出
+│   │   ├── MarkdownExporter.kt       接口 + 纯导出数据类 (不依赖 Room 实体)
+│   │   └── MarkdownExporterImpl.kt   flexmark HTML→MD 实现 + 章节分组
 │   └── README.md                     约定文档
 ├── data/
 │   ├── local/                        Room 数据层
@@ -434,18 +581,21 @@ com.epubreader.app
     │   ├── BookshelfScreen.kt        (LazyVerticalGrid + SAF + 进度隔离 + 上下文菜单)
     │   └── components/
     │       └── BookCard.kt           (Coil + 占位符)
-    └── reader/                       [Phase 3/4]
-        ├── ReaderUiState.kt          (@Immutable, +toc/isTocDrawerOpen/isSearchPanelOpen/isAutoScrollActive Phase 4)
-        ├── ReaderViewModel.kt        (@HiltViewModel, toRoute, 进度记忆, onCleared close, +搜索/选词/书签/自动滚动 Phase 4)
+    └── reader/                       [Phase 3/4/5]
+        ├── ReaderUiState.kt          (@Immutable, +toc/isTocDrawerOpen/isSearchPanelOpen/isAutoScrollActive Phase 4, +isKnowledgePanelOpen Phase 5)
+        ├── ReaderViewModel.kt        (@HiltViewModel, toRoute, 进度记忆, onCleared close, +搜索/选词/书签/自动滚动 Phase 4, +笔记/知识面板/导出 Phase 5)
         ├── ReaderHostFragment.kt     (@AndroidEntryPoint, EpubNavigatorFragment.Listener, +JS Bridge/命令/自动滚动 Phase 4)
-        ├── ReaderScreen.kt           (AndroidViewBinding + Edge-to-Edge 沉浸式, +TOC抽屉/搜索/选词工具栏 Phase 4)
+        ├── ReaderScreen.kt           (AndroidViewBinding + Edge-to-Edge 沉浸式, +TOC抽屉/搜索/选词工具栏 Phase 4, +知识面板/笔记编辑器/SAF导出 Phase 5)
         ├── PreferencesMapper.kt      (AppPreferences→EpubPreferences)
         ├── AndroidNativeApi.kt       [Phase 4] @Keep JS Bridge + origin 校验 + BridgeCallbackHolder
         ├── ReaderJsScripts.kt        [Phase 4] 自动滚动/选词 JS 脚本 (touchstart→cancelAnimationFrame)
         ├── ReaderCommand.kt          [Phase 4] Fragment 命令密封接口
         ├── TocDrawer.kt              [Phase 4] TOC 侧滑抽屉 + TocItem
         ├── SearchPanel.kt            [Phase 4] 搜索面板 + SearchState/SearchResult
-        └── SelectionToolbar.kt       [Phase 4] 选词工具栏 + SelectionState
+        ├── SelectionToolbar.kt       [Phase 4/5] 选词工具栏 + SelectionState (+Note 按钮 Phase 5)
+        ├── KnowledgeUiState.kt       [Phase 5] KnowledgeItem/KnowledgeState + ExportState + NoteEditorState
+        ├── KnowledgePanel.kt         [Phase 5] 知识面板 ModalBottomSheet (高亮/笔记/书签列表 + 导出按钮)
+        └── NoteEditorDialog.kt       [Phase 5] 笔记编辑器 AlertDialog
     ```
 
 ---
@@ -491,6 +641,19 @@ com.epubreader.app
 - **JS 脚本资源切换重注入** (Phase 4 D7): 观察 `currentLocator.href` 变化重注入
 - **SearchService @ExperimentalReadiumApi** (Phase 4 D4): `@OptIn(ExperimentalReadiumApi, Search)`
 
+## 知识管理与导出约定 (Phase 5)
+- **core/export 不依赖 Room 实体** (Phase 5 D1/Oracle M1): 使用纯数据类 (ExportHighlight/ExportNote/ExportBookmark/ExportTocItem/ExportRequest), VM 映射实体→纯模型
+- **HTML→MD 用 flexmark-java** (Phase 5 D2): `FlexmarkHtmlConverter` (lazy + @Synchronized), 禁正则 (harness §7)
+- **章节分组 + 片段归一化** (Phase 5 D3/Oracle M2): `ExportTocItem.href` + `substringBefore('#')` 匹配
+- **导出流程分离** (Phase 5 D4): VM 生成 MD 字符串 (无 Context/Uri), UI 处理 SAF/ShareSheet (NEVER #2)
+- **SAF 写入 try-catch** (Phase 5 D4/Oracle M3): CancellationException re-throw (NEVER #26 精神)
+- **笔记编辑器 UI StateFlow** (Phase 5 D5/Oracle M4): `noteEditorState` StateFlow, 非 Fragment `commands` SharedFlow
+- **笔记创建顺序依赖** (Phase 5 D5/Oracle S2): 先 HighlightEntity 后 NoteEntity(highlightUuid), 高亮失败不创建笔记
+- **一次性查询导出** (Phase 5 D6): `getByBook` suspend 查询, 非 StateFlow.value (保证新鲜数据)
+- **面板互斥** (Phase 5 D5/Oracle S3): 开启 KnowledgePanel 关闭 SearchPanel, 反之亦然
+- **文件名净化** (Phase 5 D4/Oracle S5): `replace(Regex("[\\\\/:*?\"<>|]"), "_").take(60)`
+- **blockquote 逐行前缀** (Phase 5 D2/Oracle S7): 多行高亮文本每行加 `> ` 前缀
+
 ## 同步预留 (Phase 7 用)
 - **Offline-First**: Local 优先, 后台增量同步
 - **Last-Write-Wins**: 对比 `updatedAt`, `isDeleted = 1` 优先级最高
@@ -498,31 +661,31 @@ com.epubreader.app
 
 ---
 
-# NEVER 规则合规性 (Phase 1-4)
+# NEVER 规则合规性 (Phase 1-5)
 
 | # | 规则 | 合规 | 验证方式 |
 |---|------|------|----------|
-| 2 | VM 注入接口非 DAO | ✅ | ReaderVM 注入 BookRepository + ReadingProgressRepository + BookmarkRepository + HighlightRepository + Readium 组件 |
+| 2 | VM 注入接口非 DAO | ✅ | ReaderVM 注入 BookRepository + ReadingProgressRepository + BookmarkRepository + HighlightRepository + NoteRepository + MarkdownExporter + Readium 组件 (Phase 5 新增 NoteRepository + MarkdownExporter) |
 | 5 | 禁 file:// | ✅ | v3.x WebViewServer 拦截, 无 file:// (D1) |
 | 6 | 禁 AndroidView 中 new Fragment | ✅ | AndroidViewBinding + XML android:name (M5 修复) |
 | 8 | JS Bridge origin 校验 | ✅ | AndroidNativeApi.isAllowedOrigin + 工厂资源级作用域 (Phase 4 D1) |
 | 9 | 自动滚动 touchstart→cancelAnimationFrame | ✅ | ReaderJsScripts.AUTO_SCROLL_START (Phase 4) |
-| 12 | 高频状态 derivedStateOf/隔离 | ✅ | currentLocator/searchState/selectionState/highlightDecorations 独立 StateFlow; isBookmarked derivedStateOf (Phase 4) |
+| 12 | 高频状态 derivedStateOf/隔离 | ✅ | currentLocator/searchState/selectionState/highlightDecorations 独立 StateFlow; isBookmarked derivedStateOf (Phase 4); knowledgeState/exportState/noteEditorState 独立 StateFlow (Phase 5) |
 | 14 | Try 函数式处理 | ✅ | getOrElse/fold, 无 try-catch 包裹 Try; SearchIterator.next().getOrElse (Phase 4) |
-| 15 | SAF 用 rememberLauncherForActivityResult | ✅ | OpenDocument() |
+| 15 | SAF 用 rememberLauncherForActivityResult | ✅ | OpenDocument() (Phase 2); CreateDocument("text/markdown") (Phase 5) |
 | 18 | 类型安全路由 | ✅ | @Serializable + composable<Route> |
 | 20 | WebView/JS Bridge 在 onDestroyView | ✅ | bridgeCallbackHolder.callback = null in onDestroyView (Phase 4) |
-| 21 | collectAsStateWithLifecycle | ✅ | 全部使用 (含 Phase 4 新增 searchState/selectionState/bookmarkedHrefs) |
+| 21 | collectAsStateWithLifecycle | ✅ | 全部使用 (含 Phase 4 新增 searchState/selectionState/bookmarkedHrefs; Phase 5 新增 knowledgeState/exportState/noteEditorState) |
 | 22 | toRoute<T>() 提取参数 | ✅ | ReaderViewModel savedStateHandle.toRoute<ReaderRoute>() |
 | 23 | @Keep on @JavascriptInterface | ✅ | AndroidNativeApi @Keep + ProGuard 规则 (Phase 4) |
 | 24 | NIO + yield() 大文件拷贝 | ✅ | EpubBookImporter |
-| 26 | try-catch / CoroutineExceptionHandler | ✅ | runCatchingAsync + launch(handler) + 命令处理 try-catch + CancellationException re-throw (Phase 4 MF1) |
+| 26 | try-catch / CoroutineExceptionHandler | ✅ | runCatchingAsync + launch(handler) + 命令处理 try-catch + CancellationException re-throw (Phase 4 MF1); SAF 写入 try-catch + CancellationException re-throw (Phase 5 Oracle M3) |
 | 27 | usableSpace 校验 + finally 清理 | ✅ | EpubBookImporter |
 | 29 | DataStore 强类型 Key | ✅ | PreferenceKeys internal object |
 
 ---
 
-# 测试覆盖 (60 项)
+# 测试覆盖 (90 项)
 
 | 测试文件 | 测试数 | Phase | 验证点 |
 |----------|--------|-------|--------|
@@ -538,7 +701,9 @@ com.epubreader.app
 | `AndroidNativeApiTest` | 6 | 4 | NEVER #8 (origin 校验), null callback 安全 |
 | `ReaderJsScriptsTest` | 10 | 4 | NEVER #9 (touchstart→cancelAnimationFrame), origin 传递, 幂等性 |
 | `ReaderUiStatePhase4Test` | 9 | 4 | UiState/TocItem/SearchState/SelectionState/ReaderCommand |
-| **合计** | **60** | | **全部通过** |
+| `MarkdownExporterTest` | 15 | 5 | HTML→MD 转换 (flexmark), 章节分组, 片段归一化, Unsorted, 多行 blockquote |
+| `KnowledgeUiStateTest` | 15 | 5 | KnowledgeState/KnowledgeItem, ExportState 四态, NoteEditorState 两态, ReaderUiState Phase 5 字段 |
+| **合计** | **90** | | **全部通过** |
 
 ---
 
@@ -551,9 +716,13 @@ com.epubreader.app
 - `registerJavascriptInterface("AndroidNativeApi")` 工厂模式 — buildConfiguration()
 - 侧滑目录 (TOC), 全文搜索 (SearchService), 选词, 书签, 自动滚动 — 全部实现
 
-### Phase 5 (知识管理与导出) — 立即可开始
-- flexmark-java HTML→MD (不用正则)
-- `rememberLauncherForActivityResult` 唤起 ShareSheet/SAF
+### Phase 5 (知识管理与导出) — ✅ 完成
+- flexmark-java HTML→MD (不用正则) — MarkdownExporterImpl (FlexmarkHtmlConverter)
+- `rememberLauncherForActivityResult` 唤起 ShareSheet/SAF — CreateDocument + ACTION_SEND
+- 笔记列表 (KnowledgePanel ModalBottomSheet) + 笔记编辑器 (NoteEditorDialog)
+- 按书籍/章节聚合导出 — 章节分组 + 片段归一化
+- core/export 纯数据类 (不依赖 Room 实体) — Oracle M1
+- 笔记创建: 先高亮后笔记 (FK 顺序依赖) — Oracle S2
 
 ### Phase 6 (Media3 TTS)
 - `FOREGROUND_SERVICE_MEDIA_PLAYBACK` 权限已声明 (NEVER #10)
@@ -576,7 +745,7 @@ com.epubreader.app
 # 编译 + 生成 APK
 .\gradlew.bat :app:assembleDebug --no-daemon
 
-# 运行单元测试 (60 项全部通过)
+# 运行单元测试 (90 项全部通过)
 .\gradlew.bat :app:testDebugUnitTest --no-daemon
 
 # 运行插桩测试 (需连接模拟器/设备)

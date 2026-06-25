@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Highlight
+import androidx.compose.material.icons.filled.Note
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +33,7 @@ data class SelectionState(
 fun SelectionToolbar(
     state: SelectionState,
     onHighlight: () -> Unit,
+    onNote: () -> Unit,
     onBookmark: () -> Unit,
     onCopy: () -> Unit,
     onDismiss: () -> Unit,
@@ -55,6 +57,12 @@ fun SelectionToolbar(
                 Icon(
                     Icons.Default.Highlight,
                     contentDescription = stringResource(R.string.reader_selection_highlight)
+                )
+            }
+            IconButton(onClick = onNote) {
+                Icon(
+                    Icons.Default.Note,
+                    contentDescription = stringResource(R.string.reader_selection_note)
                 )
             }
             IconButton(onClick = onBookmark) {

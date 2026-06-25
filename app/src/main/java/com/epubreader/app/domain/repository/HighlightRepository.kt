@@ -9,4 +9,5 @@ interface HighlightRepository {
     suspend fun getHighlight(uuid: String): Result<HighlightEntity?>
     suspend fun addHighlight(highlight: HighlightEntity): Result<Unit>
     suspend fun softDeleteHighlight(uuid: String): Result<Unit>
+    suspend fun getByBook(bookUuid: String): Result<List<HighlightEntity>>
 }

@@ -9,4 +9,5 @@ interface NoteRepository {
     suspend fun getNote(uuid: String): Result<NoteEntity?>
     suspend fun addNote(note: NoteEntity): Result<Unit>
     suspend fun softDeleteNote(uuid: String): Result<Unit>
+    suspend fun getByBook(bookUuid: String): Result<List<NoteEntity>>
 }

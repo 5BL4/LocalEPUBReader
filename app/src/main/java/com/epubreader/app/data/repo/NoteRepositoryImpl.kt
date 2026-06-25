@@ -29,4 +29,8 @@ class NoteRepositoryImpl @Inject constructor(
     override suspend fun softDeleteNote(uuid: String): Result<Unit> = withContext(dispatchers.io) {
         Result.runCatchingAsync { noteDao.softDelete(uuid, System.currentTimeMillis()) }
     }
+
+    override suspend fun getByBook(bookUuid: String): Result<List<NoteEntity>> = withContext(dispatchers.io) {
+        Result.runCatchingAsync { noteDao.getByBook(bookUuid) }
+    }
 }

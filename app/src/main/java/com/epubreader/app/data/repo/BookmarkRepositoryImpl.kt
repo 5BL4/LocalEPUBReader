@@ -29,4 +29,8 @@ class BookmarkRepositoryImpl @Inject constructor(
     override suspend fun softDeleteBookmark(uuid: String): Result<Unit> = withContext(dispatchers.io) {
         Result.runCatchingAsync { bookmarkDao.softDelete(uuid, System.currentTimeMillis()) }
     }
+
+    override suspend fun getByBook(bookUuid: String): Result<List<BookmarkEntity>> = withContext(dispatchers.io) {
+        Result.runCatchingAsync { bookmarkDao.getByBook(bookUuid) }
+    }
 }

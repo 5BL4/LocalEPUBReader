@@ -8,6 +8,8 @@ import com.epubreader.app.data.prefs.PreferencesRepository
 import com.epubreader.app.data.prefs.PreferencesRepositoryImpl
 import com.epubreader.app.data.remote.NoopRemoteDataSource
 import com.epubreader.app.data.remote.RemoteDataSource
+import com.epubreader.app.core.export.MarkdownExporter
+import com.epubreader.app.core.export.MarkdownExporterImpl
 import com.epubreader.app.data.repo.BookmarkRepositoryImpl
 import com.epubreader.app.data.repo.BookRepositoryImpl
 import com.epubreader.app.data.repo.HighlightRepositoryImpl
@@ -54,4 +56,8 @@ abstract class AppBindingsModule {
 
     @Binds @Singleton
     abstract fun bindNoteRepository(impl: NoteRepositoryImpl): NoteRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindMarkdownExporter(impl: MarkdownExporterImpl): MarkdownExporter
 }

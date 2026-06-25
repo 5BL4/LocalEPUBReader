@@ -9,4 +9,5 @@ interface BookmarkRepository {
     suspend fun getBookmark(uuid: String): Result<BookmarkEntity?>
     suspend fun addBookmark(bookmark: BookmarkEntity): Result<Unit>
     suspend fun softDeleteBookmark(uuid: String): Result<Unit>
+    suspend fun getByBook(bookUuid: String): Result<List<BookmarkEntity>>
 }

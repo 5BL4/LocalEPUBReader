@@ -29,4 +29,8 @@ class HighlightRepositoryImpl @Inject constructor(
     override suspend fun softDeleteHighlight(uuid: String): Result<Unit> = withContext(dispatchers.io) {
         Result.runCatchingAsync { highlightDao.softDelete(uuid, System.currentTimeMillis()) }
     }
+
+    override suspend fun getByBook(bookUuid: String): Result<List<HighlightEntity>> = withContext(dispatchers.io) {
+        Result.runCatchingAsync { highlightDao.getByBook(bookUuid) }
+    }
 }

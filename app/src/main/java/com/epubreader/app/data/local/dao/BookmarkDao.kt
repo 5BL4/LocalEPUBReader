@@ -37,4 +37,7 @@ interface BookmarkDao {
 
     @Query("SELECT * FROM bookmarks WHERE bookUuid = :bookUuid AND isDeleted = 0")
     fun observeByBook(bookUuid: String): Flow<List<BookmarkEntity>>
+
+    @Query("SELECT * FROM bookmarks WHERE bookUuid = :bookUuid AND isDeleted = 0")
+    suspend fun getByBook(bookUuid: String): List<BookmarkEntity>
 }

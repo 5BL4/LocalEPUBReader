@@ -1,12 +1,17 @@
 package com.epubreader.app.ui.reader
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.LocalActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Close
@@ -31,11 +36,14 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.viewinterop.AndroidViewBinding
@@ -46,7 +54,15 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.epubreader.app.R
 import com.epubreader.app.databinding.FragmentReaderHostContainerBinding
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.BufferedWriter
+import java.io.OutputStreamWriter
+import java.nio.charset.StandardCharsets
+
+private enum class ExportAction { SAVE_TO_FILE, SHARE }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,6 +76,9 @@ fun ReaderScreen(
     val selectionState by viewModel.selectionState.collectAsStateWithLifecycle()
     val bookmarkedHrefs by viewModel.bookmarkedHrefs.collectAsStateWithLifecycle()
     val currentLocator by viewModel.currentLocator.collectAsStateWithLifecycle()
+    val knowledgeState by viewModel.knowledgeState.collectAsStateWithLifecycle()
+    val exportState by viewModel.exportState.collectAsStateWithLifecycle()
+    val noteEditorState by viewModel.noteEditorState.collectAsStateWithLifecycle()
 
     // S1 (NEVER #12): derivedStateOf — bookmark icon only recomposes when
     // the derived boolean actually changes, not on every locator emission.
@@ -74,6 +93,73 @@ fun ReaderScreen(
     val clipboardManager = LocalClipboardManager.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+
+    val context = LocalContext.current
+
+    // Track which export action the user requested (Save vs Share)
+    var pendingExportAction by remember { mutableStateOf<ExportAction?>(null) }
+
+    // SAF launcher for saving Markdown to a file (Oracle M3: try-catch on write)
+    val saveFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/markdown")
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val content = (exportState as? ExportState.Ready)?.content
+            if (content != null) {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        try {
+                            context.contentResolver.openOutputStream(uri)?.use { out ->
+                                BufferedWriter(OutputStreamWriter(out, StandardCharsets.UTF_8)).use { writer ->
+                                    writer.write(content)
+                                }
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // Oracle M3: surface error, don't crash
+                            viewModel.resetExportState()
+                            pendingExportAction = null
+                        }
+                    }
+                    viewModel.resetExportState()
+                    pendingExportAction = null
+                }
+            }
+        } else {
+            viewModel.resetExportState()
+            pendingExportAction = null
+        }
+    }
+
+    // React to export state changes — launch SAF or ShareSheet when content is ready
+    LaunchedEffect(exportState) {
+        when (val state = exportState) {
+            is ExportState.Ready -> {
+                when (pendingExportAction) {
+                    ExportAction.SAVE_TO_FILE -> {
+                        saveFileLauncher.launch(state.suggestedFileName)
+                    }
+                    ExportAction.SHARE -> {
+                        val sendIntent = Intent().apply {
+                            action = Intent.ACTION_SEND
+                            putExtra(Intent.EXTRA_TEXT, state.content)
+                            type = "text/plain"
+                        }
+                        context.startActivity(Intent.createChooser(sendIntent, null))
+                        viewModel.resetExportState()
+                        pendingExportAction = null
+                    }
+                    null -> { /* no action pending */ }
+                }
+            }
+            is ExportState.Error -> {
+                viewModel.resetExportState()
+                pendingExportAction = null
+            }
+            else -> { /* Idle, Preparing — no action */ }
+        }
+    }
 
     // Sync drawer state with VM state (bidirectional)
     LaunchedEffect(uiState.isTocDrawerOpen) {
@@ -148,6 +234,12 @@ fun ReaderScreen(
                                 contentDescription = stringResource(R.string.reader_search)
                             )
                         }
+                        IconButton(onClick = { viewModel.toggleKnowledgePanel() }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Notes,
+                                contentDescription = stringResource(R.string.reader_knowledge)
+                            )
+                        }
                         IconButton(onClick = { viewModel.toggleBookmark() }) {
                             Icon(
                                 if (isBookmarked) Icons.Default.Bookmark
@@ -169,6 +261,7 @@ fun ReaderScreen(
                 SelectionToolbar(
                     state = selectionState,
                     onHighlight = { viewModel.requestHighlight() },
+                    onNote = { viewModel.requestNote() },
                     onBookmark = { viewModel.requestBookmarkSelection() },
                     onCopy = {
                         clipboardManager.setText(AnnotatedString(selectionState.text))
@@ -223,6 +316,33 @@ fun ReaderScreen(
                 onQueryChange = { viewModel.search(it) },
                 onResultClick = { viewModel.navigateToSearchResult(it) },
                 onClose = { viewModel.closeSearchPanel() }
+            )
+        }
+
+        // Knowledge panel overlay (ModalBottomSheet) — Phase 5
+        if (uiState.isKnowledgePanelOpen) {
+            KnowledgePanel(
+                state = knowledgeState,
+                exportState = exportState,
+                onSaveToFile = {
+                    pendingExportAction = ExportAction.SAVE_TO_FILE
+                    viewModel.prepareExport()
+                },
+                onShare = {
+                    pendingExportAction = ExportAction.SHARE
+                    viewModel.prepareExport()
+                },
+                onDeleteItem = { viewModel.deleteKnowledgeItem(it) },
+                onDismiss = { viewModel.closeKnowledgePanel() }
+            )
+        }
+
+        // Note editor dialog — Phase 5 (Oracle M4: UI StateFlow driven)
+        if (noteEditorState is NoteEditorState.Editing) {
+            NoteEditorDialog(
+                selectedText = (noteEditorState as NoteEditorState.Editing).selectedText,
+                onSave = { content -> viewModel.createNote(content) },
+                onDismiss = { viewModel.cancelNoteEditor() }
             )
         }
     }

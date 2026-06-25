@@ -10,18 +10,26 @@ import com.epubreader.app.core.AppError
 import com.epubreader.app.core.DispatchersProvider
 import com.epubreader.app.core.ErrorChannel
 import com.epubreader.app.core.StringProvider
+import com.epubreader.app.core.export.ExportBookmark
+import com.epubreader.app.core.export.ExportHighlight
+import com.epubreader.app.core.export.ExportNote
+import com.epubreader.app.core.export.ExportRequest
+import com.epubreader.app.core.export.ExportTocItem
+import com.epubreader.app.core.export.MarkdownExporter
 import com.epubreader.app.core.fold
 import com.epubreader.app.core.getOrNull
 import com.epubreader.app.core.readium.toJsonString
 import com.epubreader.app.core.readium.toLocator
 import com.epubreader.app.data.local.entity.BookmarkEntity
 import com.epubreader.app.data.local.entity.HighlightEntity
+import com.epubreader.app.data.local.entity.NoteEntity
 import com.epubreader.app.data.local.entity.ReadingProgressEntity
 import com.epubreader.app.data.prefs.AppPreferences
 import com.epubreader.app.data.prefs.PreferencesRepository
 import com.epubreader.app.domain.repository.BookRepository
 import com.epubreader.app.domain.repository.BookmarkRepository
 import com.epubreader.app.domain.repository.HighlightRepository
+import com.epubreader.app.domain.repository.NoteRepository
 import com.epubreader.app.domain.repository.ReadingProgressRepository
 import com.epubreader.app.navigation.ReaderRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,6 +43,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -68,9 +77,11 @@ class ReaderViewModel @Inject constructor(
     private val readingProgressRepository: ReadingProgressRepository,
     private val bookmarkRepository: BookmarkRepository,
     private val highlightRepository: HighlightRepository,
+    private val noteRepository: NoteRepository,
     private val preferencesRepository: PreferencesRepository,
     private val publicationOpener: PublicationOpener,
     private val assetRetriever: AssetRetriever,
+    private val markdownExporter: MarkdownExporter,
     private val dispatchers: DispatchersProvider,
     private val stringProvider: StringProvider,
     private val errorChannel: ErrorChannel,
@@ -137,6 +148,79 @@ class ReaderViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    // Phase 5: Notes observed from DB
+    val notes: StateFlow<List<NoteEntity>> = noteRepository
+        .observeNotes(bookUuid)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    // Phase 5: Aggregated knowledge state for the KnowledgePanel.
+    // Combines highlights, notes, and bookmarks into a unified KnowledgeItem list.
+    val knowledgeState: StateFlow<KnowledgeState> = combine(
+        highlightRepository.observeHighlights(bookUuid),
+        noteRepository.observeNotes(bookUuid),
+        bookmarkRepository.observeBookmarks(bookUuid)
+    ) { highlights, notesList, bookmarks ->
+        val notesByHighlight = notesList.filter { it.highlightUuid != null }.associateBy { it.highlightUuid }
+
+        val items = mutableListOf<KnowledgeItem>()
+
+        for (h in highlights.filter { !it.isDeleted }) {
+            val note = notesByHighlight[h.uuid]
+            items.add(
+                KnowledgeItem(
+                    uuid = h.uuid,
+                    type = KnowledgeItemType.HIGHLIGHT,
+                    text = h.text,
+                    noteText = note?.content,
+                    chapterTitle = findChapterTitle(h.locator),
+                    color = h.color,
+                    createdAt = h.createdAt
+                )
+            )
+        }
+
+        for (n in notesList.filter { !it.isDeleted && it.highlightUuid == null }) {
+            items.add(
+                KnowledgeItem(
+                    uuid = n.uuid,
+                    type = KnowledgeItemType.NOTE,
+                    text = n.content,
+                    chapterTitle = findChapterTitle(n.locator),
+                    createdAt = n.createdAt
+                )
+            )
+        }
+
+        for (b in bookmarks.filter { !it.isDeleted }) {
+            items.add(
+                KnowledgeItem(
+                    uuid = b.uuid,
+                    type = KnowledgeItemType.BOOKMARK,
+                    text = b.label ?: "",
+                    chapterTitle = findChapterTitle(b.locator),
+                    createdAt = b.createdAt
+                )
+            )
+        }
+
+        items.sortBy { it.createdAt }
+
+        KnowledgeState(
+            items = items.toPersistentList(),
+            highlightCount = highlights.count { !it.isDeleted },
+            noteCount = notesList.count { !it.isDeleted },
+            bookmarkCount = bookmarks.count { !it.isDeleted }
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), KnowledgeState())
+
+    // Phase 5: Export state (Oracle S1 — presentation state in UI layer)
+    private val _exportState = MutableStateFlow<ExportState>(ExportState.Idle)
+    val exportState: StateFlow<ExportState> = _exportState.asStateFlow()
+
+    // Phase 5: Note editor state (Oracle M4 — UI StateFlow, not Fragment-bound commands)
+    private val _noteEditorState = MutableStateFlow<NoteEditorState>(NoteEditorState.Hidden)
+    val noteEditorState: StateFlow<NoteEditorState> = _noteEditorState.asStateFlow()
+
     // M1: Buffered SharedFlow for one-shot commands to Fragment.
     // DROP_OLDEST prevents suspension when no collector is active (e.g., during lifecycle transitions).
     private val _commands = MutableSharedFlow<ReaderCommand>(
@@ -177,9 +261,14 @@ class ReaderViewModel @Inject constructor(
     // M4: Distinguishes highlight vs bookmark when selection is retrieved
     private var pendingSelectionAction: SelectionAction? = null
 
+    // Phase 5 (Oracle M4): Store locator + text for note editor dialog
+    private var pendingNoteLocator: Locator? = null
+    private var pendingNoteText: String = ""
+
     private sealed interface SelectionAction {
         object Highlight : SelectionAction
         object Bookmark : SelectionAction
+        object Note : SelectionAction
     }
 
     init {
@@ -323,7 +412,13 @@ class ReaderViewModel @Inject constructor(
 
     fun toggleSearchPanel() {
         val willClose = _uiState.value.isSearchPanelOpen
-        _uiState.update { it.copy(isSearchPanelOpen = !it.isSearchPanelOpen) }
+        _uiState.update {
+            it.copy(
+                isSearchPanelOpen = !it.isSearchPanelOpen,
+                // Oracle S3: close knowledge panel when opening search panel
+                isKnowledgePanelOpen = if (!willClose) false else it.isKnowledgePanelOpen
+            )
+        }
         // S-C: Clear search decorations when closing via toggle icon
         if (willClose) {
             clearSearch()
@@ -484,6 +579,11 @@ class ReaderViewModel @Inject constructor(
         _commands.tryEmit(ReaderCommand.RequestCurrentSelection)
     }
 
+    fun requestNote() {
+        pendingSelectionAction = SelectionAction.Note
+        _commands.tryEmit(ReaderCommand.RequestCurrentSelection)
+    }
+
     /** Called from Fragment after navigator.currentSelection() completes. */
     fun onSelectionRetrieved(selection: Selection?) {
         val action = pendingSelectionAction
@@ -543,11 +643,88 @@ class ReaderViewModel @Inject constructor(
                     )
                 }
             }
+            SelectionAction.Note -> {
+                // Oracle M4: Show NoteEditorDialog via UI StateFlow, not Fragment commands.
+                // Store locator + text for later use in createNote().
+                // Do NOT clear selection — defer to dialog save/cancel.
+                pendingNoteLocator = locator
+                pendingNoteText = text
+                _noteEditorState.value = NoteEditorState.Editing(selectedText = text)
+                return
+            }
         }
 
         // S7: Clear native selection after creating highlight/bookmark
         _commands.tryEmit(ReaderCommand.ClearSelection)
         _selectionState.update { it.copy(isActive = false, text = "") }
+    }
+
+    // -- Phase 5: Note Editor (Oracle M4) --
+
+    /** Called from NoteEditorDialog when user saves a note. */
+    fun createNote(content: String) {
+        val locator = pendingNoteLocator ?: return
+        val text = pendingNoteText
+        val now = System.currentTimeMillis()
+
+        viewModelScope.launch(exceptionHandler.handler) {
+            // Oracle S2: Create highlight first, then note with highlightUuid.
+            // If highlight fails, don't create note (FK constraint).
+            val highlightUuid = UUID.randomUUID().toString()
+            val highlightResult = highlightRepository.addHighlight(
+                HighlightEntity(
+                    uuid = highlightUuid,
+                    bookUuid = bookUuid,
+                    locator = locator.toJsonString(),
+                    text = text,
+                    color = HIGHLIGHT_COLOR_HEX,
+                    createdAt = now,
+                    updatedAt = now,
+                    isDeleted = false
+                )
+            )
+            highlightResult.fold(
+                onSuccess = {
+                    val noteResult = noteRepository.addNote(
+                        NoteEntity(
+                            uuid = UUID.randomUUID().toString(),
+                            bookUuid = bookUuid,
+                            highlightUuid = highlightUuid,
+                            locator = locator.toJsonString(),
+                            content = content,
+                            createdAt = now,
+                            updatedAt = now,
+                            isDeleted = false
+                        )
+                    )
+                    noteResult.fold(
+                        onSuccess = {
+                            // Oracle S1: clear pending fields + close dialog only on success
+                            _noteEditorState.value = NoteEditorState.Hidden
+                            _commands.tryEmit(ReaderCommand.ClearSelection)
+                            _selectionState.update { it.copy(isActive = false, text = "") }
+                            pendingNoteLocator = null
+                            pendingNoteText = ""
+                        },
+                        onFailure = { cause, _ ->
+                            errorChannel.tryEmit(AppError(message = cause.message ?: "Failed to add note", cause = cause))
+                        }
+                    )
+                },
+                onFailure = { cause, _ ->
+                    errorChannel.tryEmit(AppError(message = cause.message ?: "Failed to add highlight", cause = cause))
+                }
+            )
+        }
+    }
+
+    /** Called from NoteEditorDialog when user cancels. */
+    fun cancelNoteEditor() {
+        _noteEditorState.value = NoteEditorState.Hidden
+        _commands.tryEmit(ReaderCommand.ClearSelection)
+        _selectionState.update { it.copy(isActive = false, text = "") }
+        pendingNoteLocator = null
+        pendingNoteText = ""
     }
 
     // -- Phase 4: Bookmark (chapter-level toggle) --
@@ -592,6 +769,126 @@ class ReaderViewModel @Inject constructor(
     /** Called from JS bridge (via Fragment) when touch stops auto-scroll. */
     fun onAutoScrollStopped() {
         _uiState.update { it.copy(isAutoScrollActive = false) }
+    }
+
+    // -- Phase 5: Knowledge Panel --
+
+    fun toggleKnowledgePanel() {
+        val willOpen = !_uiState.value.isKnowledgePanelOpen
+        // Oracle MF1: capture search state BEFORE update (update sets it to false)
+        val searchWasOpen = _uiState.value.isSearchPanelOpen
+        _uiState.update {
+            it.copy(
+                isKnowledgePanelOpen = willOpen,
+                // Oracle S3: close search panel when opening knowledge panel
+                isSearchPanelOpen = if (willOpen) false else it.isSearchPanelOpen
+            )
+        }
+        if (willOpen && searchWasOpen) {
+            clearSearch()
+        }
+    }
+
+    fun closeKnowledgePanel() {
+        _uiState.update { it.copy(isKnowledgePanelOpen = false) }
+    }
+
+    /** Deletes a highlight, note, or bookmark from the KnowledgePanel. */
+    fun deleteKnowledgeItem(item: KnowledgeItem) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            val result = when (item.type) {
+                KnowledgeItemType.HIGHLIGHT -> highlightRepository.softDeleteHighlight(item.uuid)
+                KnowledgeItemType.NOTE -> noteRepository.softDeleteNote(item.uuid)
+                KnowledgeItemType.BOOKMARK -> bookmarkRepository.softDeleteBookmark(item.uuid)
+            }
+            result.fold(
+                onSuccess = { /* flows auto-update knowledgeState */ },
+                onFailure = { cause, _ ->
+                    errorChannel.tryEmit(AppError(message = cause.message ?: "Failed to delete", cause = cause))
+                }
+            )
+        }
+    }
+
+    // -- Phase 5: Export --
+
+    /** Prepares Markdown export using fresh one-shot queries (D6). */
+    fun prepareExport() {
+        viewModelScope.launch(exceptionHandler.handler) {
+            _exportState.value = ExportState.Preparing
+            try {
+                // D6: One-shot queries guarantee fresh data (StateFlow.value may be stale)
+                val highlights = highlightRepository.getByBook(bookUuid).getOrNull() ?: emptyList()
+                val notesList = noteRepository.getByBook(bookUuid).getOrNull() ?: emptyList()
+                val bookmarks = bookmarkRepository.getByBook(bookUuid).getOrNull() ?: emptyList()
+                val book = bookRepository.getBook(bookUuid).getOrNull()
+                val bookTitle = book?.title ?: "Untitled"
+
+                // Build ExportTocItem list from parallel tocLinks + uiState.toc
+                val tocItems = _uiState.value.toc
+                val exportToc = tocLinks.mapIndexed { index, link ->
+                    val title = link.title ?: link.href.toString()
+                    val level = tocItems.getOrNull(index)?.level ?: 1
+                    ExportTocItem(title = title, href = link.href.toString(), level = level)
+                }
+
+                // Map entities to plain export models (Oracle M1 — core/ decoupled from entities)
+                val exportHighlights = highlights.map {
+                    ExportHighlight(text = it.text, locatorJson = it.locator, color = it.color)
+                }
+                val exportNotes = notesList.map { n ->
+                    val highlightText = n.highlightUuid?.let { hUuid ->
+                        highlights.find { it.uuid == hUuid }?.text
+                    }
+                    ExportNote(content = n.content, highlightText = highlightText, locatorJson = n.locator)
+                }
+                val exportBookmarks = bookmarks.map {
+                    ExportBookmark(label = it.label, locatorJson = it.locator)
+                }
+
+                val request = ExportRequest(
+                    bookTitle = bookTitle,
+                    toc = exportToc,
+                    highlights = exportHighlights,
+                    notes = exportNotes,
+                    bookmarks = exportBookmarks
+                )
+
+                val markdown = withContext(dispatchers.default) {
+                    markdownExporter.exportToMarkdown(request)
+                }
+
+                // Oracle S5: Sanitize filename
+                val fileName = sanitizeFileName(bookTitle) + "-annotations.md"
+                _exportState.value = ExportState.Ready(content = markdown, suggestedFileName = fileName)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _exportState.value = ExportState.Error(message = e.message ?: "Export failed")
+            }
+        }
+    }
+
+    fun resetExportState() {
+        _exportState.value = ExportState.Idle
+    }
+
+    // -- Phase 5: Helpers --
+
+    /** Matches a locator JSON href to TOC chapter title (Oracle M2: fragment normalization). */
+    private fun findChapterTitle(locatorJson: String?): String? {
+        if (locatorJson == null) return null
+        val locator = locatorJson.toLocator() ?: return null
+        val href = locator.href.toString().substringBefore('#').substringBefore('?').trimEnd('/')
+        val link = tocLinks.find {
+            it.href.toString().substringBefore('#').substringBefore('?').trimEnd('/') == href
+        }
+        return link?.title
+    }
+
+    /** Oracle S5: Sanitize book title for use as filename. */
+    private fun sanitizeFileName(name: String): String {
+        return name.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(60)
     }
 
     // -- Existing: Locator & progress --

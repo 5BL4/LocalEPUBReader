@@ -37,4 +37,7 @@ interface NoteDao {
 
     @Query("SELECT * FROM notes WHERE bookUuid = :bookUuid AND isDeleted = 0")
     fun observeByBook(bookUuid: String): Flow<List<NoteEntity>>
+
+    @Query("SELECT * FROM notes WHERE bookUuid = :bookUuid AND isDeleted = 0")
+    suspend fun getByBook(bookUuid: String): List<NoteEntity>
 }

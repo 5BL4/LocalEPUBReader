@@ -37,4 +37,7 @@ interface HighlightDao {
 
     @Query("SELECT * FROM highlights WHERE bookUuid = :bookUuid AND isDeleted = 0")
     fun observeByBook(bookUuid: String): Flow<List<HighlightEntity>>
+
+    @Query("SELECT * FROM highlights WHERE bookUuid = :bookUuid AND isDeleted = 0")
+    suspend fun getByBook(bookUuid: String): List<HighlightEntity>
 }

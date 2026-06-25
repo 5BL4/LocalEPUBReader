@@ -36,4 +36,26 @@
     <string name="reader_selection_copied">Copied to clipboard</string>
     <string name="reader_highlight_added">Highlight added</string>
     <string name="reader_no_selection">No text selected</string>
+    <string name="reader_knowledge">Annotations</string>
+    <string name="reader_knowledge_title">Knowledge</string>
+    <string name="reader_knowledge_empty">No highlights, notes, or bookmarks yet</string>
+    <string name="reader_knowledge_highlights_count">Highlights: %1$d</string>
+    <string name="reader_knowledge_notes_count">Notes: %1$d</string>
+    <string name="reader_knowledge_bookmarks_count">Bookmarks: %1$d</string>
+    <string name="reader_knowledge_delete">Delete</string>
+    <string name="reader_export_save_to_file">Save to file</string>
+    <string name="reader_export_share">Share</string>
+    <string name="reader_export_success">Exported successfully</string>
+    <string name="reader_export_error">Export failed: %1$s</string>
+    <string name="reader_export_preparing">Preparing export…</string>
+    <string name="reader_note_editor_title">Add Note</string>
+    <string name="reader_note_editor_selected">Selected text:</string>
+    <string name="reader_note_editor_hint">Write your note…</string>
+    <string name="reader_note_editor_save">Save</string>
+    <string name="reader_note_editor_cancel">Cancel</string>
+    <string name="reader_selection_note">Note</string>
+    <string name="reader_note_added">Note added</string>
+    <string name="reader_note_deleted">Note deleted</string>
+    <string name="reader_highlight_deleted">Highlight deleted</string>
+    <string name="reader_bookmark_deleted">Bookmark deleted</string>
 </resources>
