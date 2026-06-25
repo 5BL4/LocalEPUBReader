@@ -1,11 +1,11 @@
 # EpubReader — 技术文档 (Technical Documentation)
 
 > **项目**: 本地 EPUB 阅读器 (EpubReader)
-> **状态**: Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅ 完成
+> **状态**: Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅ → Phase 4 ✅ 完成
 > **日期**: 2026-06-25
-> **下一步**: 等待用户指令后开始 Phase 4 (JS Bridge 与交互系统)
+> **下一步**: 等待用户指令后开始 Phase 5 (知识管理与导出)
 
-本文档合并了 Phase 1 (基础架构与同步数据模型)、Phase 2 (书架 UI 与路由)、Phase 3 (Readium v3.x 引擎集成) 的全部进度文档。
+本文档合并了 Phase 1 (基础架构与同步数据模型)、Phase 2 (书架 UI 与路由)、Phase 3 (Readium v3.x 引擎集成)、Phase 4 (JS Bridge 与交互系统) 的全部进度文档。
 
 ---
 
@@ -259,6 +259,94 @@ Harness §7 说 "onDestroy 清理 Publication"。在 Compose+ViewModel 架构中
 
 ---
 
+# Phase 4 — JS Bridge 与交互系统
+
+> **状态**: ✅ 完成 (构建通过, 60 项测试全部通过, Oracle 计划审查 ACCEPT_WITH_CHANGES, Oracle 结果审查 ACCEPT_WITH_CHANGES, 所有 must-fix 已修复)
+
+## 4.1 关键架构决策 (Oracle 审查通过)
+
+### D1: JS Bridge 工厂模式 + 资源级作用域
+使用 `EpubNavigatorFragment.Configuration { registerJavascriptInterface("AndroidNativeApi") { link -> ... } }` 工厂模式。工厂按资源 (spine item) 调用, 仅对 HTML 资源 (`link.mediaType?.isHtml == true`) 返回 bridge 实例, 其他资源返回 null。这是 NEVER #8 (origin 校验) 的纵深防御层 — 即使恶意 EPUB 注入 JS, 也无法在非 HTML 资源中访问 bridge。
+
+### D2: BridgeCallbackHolder 防 Fragment 泄漏
+JS Bridge 工厂捕获 `BridgeCallbackHolder` (小型对象), 而非 Fragment。Fragment 在 `setupNavigatorObserver()` 设置 callback, 在 `onDestroyView()` 清除 (NEVER #20)。`@Volatile var callback` 保证 WebView 线程可见性。BridgeCallback 实现仅委托给 ViewModel 方法 (线程安全的 StateFlow 更新), 不访问 Fragment 视图。
+
+### D3: 混合选词模式 (Push + Pull)
+- **Push (JS → Native)**: `selectionchange` 事件经 300ms 防抖后, JS 调用 `AndroidNativeApi.onSelectionChanged(origin, text)` 通知原生选词文本变化 (响应式 UX)
+- **Pull (Native → JS)**: 用户点击高亮/书签按钮时, VM 发出 `RequestCurrentSelection` 命令, Fragment 调用 `navigator.currentSelection()` (suspend) 获取完整 Locator
+
+### D4: 内置 SearchService (@ExperimentalReadiumApi)
+使用 Readium v3.3.0 内置 `Publication.search(query): SearchIterator?` (标记 `@ExperimentalReadiumApi` + `@Search`)。`SearchIterator.next()` 返回 `Try<LocatorCollection?, SearchError>`, 用 `getOrElse` 函数式处理 (NEVER #14)。搜索结果作为 `Decoration.Style.Underline` 装饰应用, 导航到结果时用 `navigator.go(locator)`。
+
+### D5: 自动滚动状态驱动 (非命令)
+自动滚动通过 `uiState.isAutoScrollActive` StateFlow 驱动, Fragment 观察状态变化注入 START/STOP JS。不使用命令通道 — 避免双路径竞态 (Oracle M2)。JS 端 `touchstart` → `cancelAnimationFrame` + 通知原生 `onAutoScrollStopped()` (NEVER #9), 原生更新状态为 false, 图标自动切换。
+
+### D6: highlightDecorations StateFlow (非命令)
+高亮装饰通过 `highlightDecorations: StateFlow<List<Decoration>>` 直接由 Fragment 收集, 而非通过 SharedFlow 命令。原因: SharedFlow `replay=0` 会丢失 VM init 期间 (navigator 尚未就绪) 发射的初始装饰。StateFlow 始终保留最新值, Fragment 在 `setupNavigatorObserver()` 开始收集时立即获得当前装饰。
+
+### D7: JS 脚本资源切换重注入
+`evaluateJavascript` 仅作用于当前资源的 WebView。导航到新章节时创建新 WebView, 注入的脚本丢失。Fragment 观察 `currentLocator.href` 变化 (`distinctUntilChanged`), 在 href 改变时重新注入 `SELECTION_LISTENER` 和 (如果激活) `AUTO_SCROLL_START` (Oracle M6)。
+
+### D8: 进程死亡恢复 (usedDefaultFactory 标志)
+进程死亡后, `onCreate()` 中 VM 尚未加载, 使用 `DefaultReaderFragmentFactory` (无 Configuration) 创建 navigator。VM 加载后 `setupNavigator()` 检测 `usedDefaultFactory` 标志, 移除未配置的 fragment 并用正确 Configuration 重建 (Oracle M3)。
+
+## 4.2 已完成的交付物
+
+### Phase 4 新增文件 (6)
+
+| 文件 | 说明 |
+|------|------|
+| `ui/reader/AndroidNativeApi.kt` [NEW] | `@Keep` JS Bridge 类 (NEVER #23)。`@JavascriptInterface` 方法接收 `origin` 参数, `isAllowedOrigin()` 校验 against `ALLOWED_ORIGINS = {"https://readium_package", "https://readium_assets"}` (NEVER #8)。`BridgeCallbackHolder` (`@Volatile callback`) 防 Fragment 泄漏。`BridgeCallback` 接口: `onAutoScrollStopped()`, `onSelectionChanged(text)` |
+| `ui/reader/ReaderJsScripts.kt` [NEW] | JS 脚本常量。`AUTO_SCROLL_START`: `requestAnimationFrame` 循环 + `touchstart`/`touchmove` → `cancelAnimationFrame` (NEVER #9) + 通知原生 + 文档底部检测 (S-I)。`AUTO_SCROLL_STOP`: 调用 stop 函数。`SELECTION_LISTENER`: 300ms 防抖 `selectionchange` → 通知原生。所有脚本幂等 (检查 `window.__epub*` 标志), 传递 `window.location.origin` |
+| `ui/reader/ReaderCommand.kt` [NEW] | Fragment 命令密封接口: `NavigateToLocator`, `NavigateToLink`, `RequestCurrentSelection`, `ApplyDecorations`, `ClearSelection`。无 `EvaluateJavascript` (Oracle M2 — 状态驱动避免泄漏 JS 实现细节) |
+| `ui/reader/TocDrawer.kt` [NEW] | TOC 侧滑抽屉。`@Immutable TocItem(title, level)`。`TocDrawer` Composable: `ModalDrawerSheet` + `LazyColumn` + `NavigationDrawerItem`, 按 level 缩进 |
+| `ui/reader/SearchPanel.kt` [NEW] | 搜索面板。`@Immutable SearchState(query, isSearching, results: PersistentList, currentIndex, error)` + `SearchResult(text, before, after)`。`SearchPanel` Composable: `ModalBottomSheet` + `OutlinedTextField` + 结果列表 |
+| `ui/reader/SelectionToolbar.kt` [NEW] | 选词工具栏。`@Immutable SelectionState(isActive, text)`。`SelectionToolbar` Composable: 高亮/书签/复制/关闭按钮 |
+
+### Phase 4 修改文件 (5)
+
+| 文件 | 变更 |
+|------|------|
+| `ui/reader/ReaderUiState.kt` [MODIFY] | 新增字段: `toc: PersistentList<TocItem>`, `isTocDrawerOpen`, `isSearchPanelOpen`, `isAutoScrollActive` |
+| `ui/reader/ReaderViewModel.kt` [MODIFY] | 注入 `BookmarkRepository`, `HighlightRepository`。新增 StateFlow: `searchState`, `selectionState`, `bookmarks`, `bookmarkedHrefs` (S-E 预计算), `highlightDecorations` (D6), `commands` (M1 缓冲 SharedFlow)。新增方法: TOC 加载/导航, 搜索 (SearchService + 防抖 S4 + 立即更新 query S-A), 选词 (pendingSelectionAction M4), 书签切换, 自动滚动状态, 高亮装饰。`@OptIn(ExperimentalReadiumApi, Search)` |
+| `ui/reader/ReaderHostFragment.kt` [MODIFY] | `buildConfiguration()` 工厂模式注册 JS Bridge (D1)。实现 `BridgeCallback` (D2)。`usedDefaultFactory` 标志 (M3/D8)。JS 重注入 (M6/D7)。命令收集器在 `setupNavigatorObserver` (M7)。自动滚动状态驱动 (M2/D5)。所有 suspend 调用 try-catch + CancellationException re-throw (M5/MF1)。`onExternalLinkActivated` 打开浏览器 |
+| `ui/reader/ReaderScreen.kt` [MODIFY] | `ModalNavigationDrawer` TOC 抽屉。TopAppBar 操作: TOC/搜索/书签/自动滚动图标。`SearchPanel` 覆盖层。`SelectionToolbar` 底部栏。`derivedStateOf` 计算 `isBookmarked` (S1, 使用 `bookmarkedHrefs` S-E)。全部 `collectAsStateWithLifecycle` (NEVER #21) |
+| `res/values/strings.xml` [MODIFY] | 新增 18 个字符串 (TOC, 搜索, 书签, 自动滚动, 选词) |
+
+### Phase 4 测试 (25 项新增, 60 项总计)
+
+| 测试文件 | 测试数 | 验证点 |
+|----------|--------|--------|
+| `AndroidNativeApiTest` | 6 | NEVER #8: 允许 origin 调用回调, 阻止 origin 不调用, null callback 不崩溃, isAllowedOrigin 校验 |
+| `ReaderJsScriptsTest` | 10 | NEVER #9: requestAnimationFrame, touchstart, cancelAnimationFrame, onAutoScrollStopped, origin 传递, 幂等性, passive 监听器 |
+| `ReaderUiStatePhase4Test` | 9 | UiState 默认值/copy, TocItem, SearchState, SelectionState, SearchResult, ReaderCommand |
+
+## 4.3 Readium v3.3.0 API 修正 (编译时验证)
+
+| 文档 API | 实际 v3.3.0 API |
+|----------|----------------|
+| `registerJavascriptInterface(name, listener: (String) -> Unit)` | `registerJavascriptInterface(name: String, factory: JavascriptInterfaceFactory)` where `typealias JavascriptInterfaceFactory = (resource: Link) -> Any?` |
+| `SelectionListener` / `onSelection` 回调 | 不存在 — 用 `SelectableNavigator.currentSelection(): Selection?` (suspend) |
+| `navigator.currentBookmarkValue` | 不存在 — 用 `navigator.currentLocator.value` |
+| 搜索需自定义 JS | 内置 `SearchService` (`@ExperimentalReadiumApi` + `@Search`), `publication.search(query): SearchIterator?` |
+| `SearchIterator.next()` 返回 `Try<LocatorCollection?, SearchError>` | `LocatorCollection.locators: List<Locator>` (在 `org.readium.r2.shared.publication` 包) |
+
+## 4.4 Oracle 审查结论
+
+### 计划审查 (ora-1): ACCEPT_WITH_CHANGES
+- 7 个必修项 (M1-M7): SharedFlow 缓冲, 自动滚动状态驱动, 进程死亡恢复, pendingSelectionAction, try-catch, JS 重注入, 命令收集器位置
+- 10 个建议项 (S1-S10)
+- 全部在实现前修复
+
+### 结果审查 (ora-2): ACCEPT_WITH_CHANGES — 所有必修项已修复
+- **MF1 (NEVER #26)**: 4 个 try-catch 块吞掉 CancellationException → 全部添加 `catch (e: CancellationException) { throw e }` ✅
+- **S-A**: query 在防抖前立即更新 (避免文本框回退) ✅
+- **S-C**: toggleSearchPanel 关闭时清除搜索装饰 ✅
+- **S-E**: 预计算 bookmarkedHrefs Set (避免每次滚动 JSON 解析) ✅
+- **S-I**: 自动滚动文档底部检测 (节省 CPU/电池) ✅
+
+---
+
 # 锁定的依赖版本 (后续 Phase 共用)
 
 | 依赖 | 版本 | 备注 |
@@ -346,13 +434,19 @@ com.epubreader.app
     │   ├── BookshelfScreen.kt        (LazyVerticalGrid + SAF + 进度隔离 + 上下文菜单)
     │   └── components/
     │       └── BookCard.kt           (Coil + 占位符)
-    └── reader/                       [Phase 3]
-        ├── ReaderUiState.kt          (@Immutable, 无 currentLocator)
-        ├── ReaderViewModel.kt        (@HiltViewModel, toRoute, 进度记忆, onCleared close)
-        ├── ReaderHostFragment.kt     (@AndroidEntryPoint, EpubNavigatorFragment.Listener)
-        ├── ReaderScreen.kt           (AndroidViewBinding + Edge-to-Edge 沉浸式)
-        └── PreferencesMapper.kt      (AppPreferences→EpubPreferences)
-```
+    └── reader/                       [Phase 3/4]
+        ├── ReaderUiState.kt          (@Immutable, +toc/isTocDrawerOpen/isSearchPanelOpen/isAutoScrollActive Phase 4)
+        ├── ReaderViewModel.kt        (@HiltViewModel, toRoute, 进度记忆, onCleared close, +搜索/选词/书签/自动滚动 Phase 4)
+        ├── ReaderHostFragment.kt     (@AndroidEntryPoint, EpubNavigatorFragment.Listener, +JS Bridge/命令/自动滚动 Phase 4)
+        ├── ReaderScreen.kt           (AndroidViewBinding + Edge-to-Edge 沉浸式, +TOC抽屉/搜索/选词工具栏 Phase 4)
+        ├── PreferencesMapper.kt      (AppPreferences→EpubPreferences)
+        ├── AndroidNativeApi.kt       [Phase 4] @Keep JS Bridge + origin 校验 + BridgeCallbackHolder
+        ├── ReaderJsScripts.kt        [Phase 4] 自动滚动/选词 JS 脚本 (touchstart→cancelAnimationFrame)
+        ├── ReaderCommand.kt          [Phase 4] Fragment 命令密封接口
+        ├── TocDrawer.kt              [Phase 4] TOC 侧滑抽屉 + TocItem
+        ├── SearchPanel.kt            [Phase 4] 搜索面板 + SearchState/SearchResult
+        └── SelectionToolbar.kt       [Phase 4] 选词工具栏 + SelectionState
+    ```
 
 ---
 
@@ -382,13 +476,20 @@ com.epubreader.app
 - **`AppCoroutineExceptionHandler` 是兜底**: 通过 `viewModelScope.launch(handler)` 使用
 - **CancellationException 必须 re-throw**: `Result.runCatchingAsync` 在 catch Throwable 前 catch CancellationException 并 re-throw (Phase 2 M1)
 
-## Readium v3 桥接约定 (Phase 3)
+## Readium v3 桥接约定 (Phase 3-4)
 - **HttpServer 已移除**: v3.3.0 使用内部 WebViewServer, 无需本地 HTTP 服务器 (D1 偏离 harness)
 - **Try<T> 用 `fold`/`getOrElse`/`onFailure` 处理**, **禁止 try-catch 包裹** (NEVER #14)
 - **Publication.close() 在 `ReaderViewModel.onCleared()`** (D3 — Compose+VM 等价于 Fragment.onDestroy)
 - **Locator 通过 LocatorMapper 转换**, 不在数据层引入 Readium 类型 (D2)
 - **Fragment 嵌入用 AndroidViewBinding + XML android:name** (D4 — NEVER #6)
 - **高频状态 (currentLocator) 隔离到独立 StateFlow** (M2 — NEVER #12)
+- **JS Bridge 工厂模式注册** (Phase 4 D1): `registerJavascriptInterface(name) { link -> ... }`, 仅 HTML 资源
+- **JS Bridge origin 校验** (Phase 4 D1/NEVER #8): `window.location.origin` against `{"https://readium_package", "https://readium_assets"}`
+- **JS Bridge 清理在 onDestroyView** (Phase 4 D2/NEVER #20): `bridgeCallbackHolder.callback = null`
+- **自动滚动状态驱动** (Phase 4 D5): `uiState.isAutoScrollActive` StateFlow, 非 command
+- **高亮装饰 StateFlow** (Phase 4 D6): `highlightDecorations` 直接收集, 非 command (避免 replay=0 丢失)
+- **JS 脚本资源切换重注入** (Phase 4 D7): 观察 `currentLocator.href` 变化重注入
+- **SearchService @ExperimentalReadiumApi** (Phase 4 D4): `@OptIn(ExperimentalReadiumApi, Search)`
 
 ## 同步预留 (Phase 7 用)
 - **Offline-First**: Local 优先, 后台增量同步
@@ -397,29 +498,31 @@ com.epubreader.app
 
 ---
 
-# NEVER 规则合规性 (Phase 1-3)
+# NEVER 规则合规性 (Phase 1-4)
 
 | # | 规则 | 合规 | 验证方式 |
 |---|------|------|----------|
-| 2 | VM 注入接口非 DAO | ✅ | ReaderVM 注入 BookRepository + ReadingProgressRepository + Readium 组件 |
+| 2 | VM 注入接口非 DAO | ✅ | ReaderVM 注入 BookRepository + ReadingProgressRepository + BookmarkRepository + HighlightRepository + Readium 组件 |
 | 5 | 禁 file:// | ✅ | v3.x WebViewServer 拦截, 无 file:// (D1) |
 | 6 | 禁 AndroidView 中 new Fragment | ✅ | AndroidViewBinding + XML android:name (M5 修复) |
-| 12 | 高频状态 derivedStateOf/隔离 | ✅ | currentLocator 独立 StateFlow (M2 修复); importProgress derivedStateOf |
-| 14 | Try 函数式处理 | ✅ | getOrElse/fold, 无 try-catch 包裹 Try |
+| 8 | JS Bridge origin 校验 | ✅ | AndroidNativeApi.isAllowedOrigin + 工厂资源级作用域 (Phase 4 D1) |
+| 9 | 自动滚动 touchstart→cancelAnimationFrame | ✅ | ReaderJsScripts.AUTO_SCROLL_START (Phase 4) |
+| 12 | 高频状态 derivedStateOf/隔离 | ✅ | currentLocator/searchState/selectionState/highlightDecorations 独立 StateFlow; isBookmarked derivedStateOf (Phase 4) |
+| 14 | Try 函数式处理 | ✅ | getOrElse/fold, 无 try-catch 包裹 Try; SearchIterator.next().getOrElse (Phase 4) |
 | 15 | SAF 用 rememberLauncherForActivityResult | ✅ | OpenDocument() |
 | 18 | 类型安全路由 | ✅ | @Serializable + composable<Route> |
-| 20 | WebView/JS Bridge 在 onDestroyView | ✅ | ReaderHostFragment.onDestroyView 取消 collector; EpubNavigatorFragment 内部清理 |
-| 21 | collectAsStateWithLifecycle | ✅ | 全部使用 |
+| 20 | WebView/JS Bridge 在 onDestroyView | ✅ | bridgeCallbackHolder.callback = null in onDestroyView (Phase 4) |
+| 21 | collectAsStateWithLifecycle | ✅ | 全部使用 (含 Phase 4 新增 searchState/selectionState/bookmarkedHrefs) |
 | 22 | toRoute<T>() 提取参数 | ✅ | ReaderViewModel savedStateHandle.toRoute<ReaderRoute>() |
-| 23 | @Keep on @JavascriptInterface | ✅ | ProGuard 规则预置 (Phase 4 注册接口) |
+| 23 | @Keep on @JavascriptInterface | ✅ | AndroidNativeApi @Keep + ProGuard 规则 (Phase 4) |
 | 24 | NIO + yield() 大文件拷贝 | ✅ | EpubBookImporter |
-| 26 | try-catch / CoroutineExceptionHandler | ✅ | runCatchingAsync + launch(handler) |
+| 26 | try-catch / CoroutineExceptionHandler | ✅ | runCatchingAsync + launch(handler) + 命令处理 try-catch + CancellationException re-throw (Phase 4 MF1) |
 | 27 | usableSpace 校验 + finally 清理 | ✅ | EpubBookImporter |
 | 29 | DataStore 强类型 Key | ✅ | PreferenceKeys internal object |
 
 ---
 
-# 测试覆盖 (38 项)
+# 测试覆盖 (60 项)
 
 | 测试文件 | 测试数 | Phase | 验证点 |
 |----------|--------|-------|--------|
@@ -432,20 +535,23 @@ com.epubreader.app
 | `ReadiumMetadataParserTest` | 5 | 3 | NEVER #14, 封面提取, Publication 关闭 |
 | `ReaderViewModelTest` | 4 | 3 | UiState/依赖装配 (Bundle JVM 限制) |
 | `BookRepositoryImplReparseTest` | 4 | 3 | reparseMetadata 流程 |
-| **合计** | **38** | | **全部通过** |
+| `AndroidNativeApiTest` | 6 | 4 | NEVER #8 (origin 校验), null callback 安全 |
+| `ReaderJsScriptsTest` | 10 | 4 | NEVER #9 (touchstart→cancelAnimationFrame), origin 传递, 幂等性 |
+| `ReaderUiStatePhase4Test` | 9 | 4 | UiState/TocItem/SearchState/SelectionState/ReaderCommand |
+| **合计** | **60** | | **全部通过** |
 
 ---
 
 # 后续 Phase 衔接要点
 
-### Phase 4 (JS Bridge 与交互) — 立即可开始
-- `@JavascriptInterface` + `@Keep` 防 R8 (NEVER #23) — ProGuard 规则已预置
-- 校验 `window.location.origin` (NEVER #8)
-- 自动滚动 JS 绑定 `touchstart` → `cancelAnimationFrame` (NEVER #9)
-- 在 `EpubNavigatorFragment.Configuration` 中 `registerJavascriptInterface("AndroidNativeApi") { link -> ... }` (基础设施已就绪)
-- 侧滑目录 (TOC), 全文搜索, 选词
+### Phase 4 (JS Bridge 与交互) — ✅ 完成
+- `@JavascriptInterface` + `@Keep` 防 R8 (NEVER #23) — AndroidNativeApi 已实现
+- 校验 `window.location.origin` (NEVER #8) — isAllowedOrigin + 工厂资源级作用域
+- 自动滚动 JS 绑定 `touchstart` → `cancelAnimationFrame` (NEVER #9) — ReaderJsScripts.AUTO_SCROLL_START
+- `registerJavascriptInterface("AndroidNativeApi")` 工厂模式 — buildConfiguration()
+- 侧滑目录 (TOC), 全文搜索 (SearchService), 选词, 书签, 自动滚动 — 全部实现
 
-### Phase 5 (知识管理与导出)
+### Phase 5 (知识管理与导出) — 立即可开始
 - flexmark-java HTML→MD (不用正则)
 - `rememberLauncherForActivityResult` 唤起 ShareSheet/SAF
 
@@ -470,7 +576,7 @@ com.epubreader.app
 # 编译 + 生成 APK
 .\gradlew.bat :app:assembleDebug --no-daemon
 
-# 运行单元测试 (38 项全部通过)
+# 运行单元测试 (60 项全部通过)
 .\gradlew.bat :app:testDebugUnitTest --no-daemon
 
 # 运行插桩测试 (需连接模拟器/设备)

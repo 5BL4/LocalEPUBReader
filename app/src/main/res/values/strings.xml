@@ -16,4 +16,24 @@
     <string name="reader_error_open">Failed to open book. Please try again.</string>
     <string name="reader_retry">Retry</string>
     <string name="action_back">Back</string>
+    <string name="reader_toc">Table of Contents</string>
+    <string name="reader_toc_title">Contents</string>
+    <string name="reader_search">Search</string>
+    <string name="reader_search_hint">Search in book…</string>
+    <string name="reader_search_close">Close search</string>
+    <string name="reader_search_no_results">No results found</string>
+    <string name="reader_search_results_count">%1$d results</string>
+    <string name="reader_search_unavailable">Search is not available for this book.</string>
+    <string name="reader_search_error">Search failed. Please try again.</string>
+    <string name="reader_bookmark">Bookmark</string>
+    <string name="reader_bookmark_added">Bookmark added</string>
+    <string name="reader_bookmark_removed">Bookmark removed</string>
+    <string name="reader_auto_scroll">Auto-scroll</string>
+    <string name="reader_selection_highlight">Highlight</string>
+    <string name="reader_selection_bookmark">Bookmark selection</string>
+    <string name="reader_selection_copy">Copy</string>
+    <string name="reader_selection_dismiss">Dismiss</string>
+    <string name="reader_selection_copied">Copied to clipboard</string>
+    <string name="reader_highlight_added">Highlight added</string>
+    <string name="reader_no_selection">No text selected</string>
 </resources>
