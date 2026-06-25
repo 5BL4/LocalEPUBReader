@@ -17,4 +17,15 @@ sealed interface ReaderCommand {
     object RequestCurrentSelection : ReaderCommand
     data class ApplyDecorations(val decorations: List<Decoration>, val group: String) : ReaderCommand
     object ClearSelection : ReaderCommand
+
+    // Phase 6 (TTS) — one-shot commands.
+    // NOTE: HighlightSentence is NOT here — it's state-driven via
+    // currentSentenceIndex StateFlow (Oracle M2) to avoid flooding the
+    // SharedFlow buffer (DROP_OLDEST would drop navigation commands).
+
+    /** Requests JS sentence extraction for the current chapter. */
+    object ExtractSentences : ReaderCommand
+
+    /** Clears all TTS highlights from the current WebView. */
+    object ClearTtsHighlight : ReaderCommand
 }

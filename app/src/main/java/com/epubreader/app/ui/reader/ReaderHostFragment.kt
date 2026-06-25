@@ -203,7 +203,9 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                     navigator.currentLocator
                         .map { it.href.toString() }
                         .distinctUntilChanged()
-                        .collect {
+                        .collect { href ->
+                            // Phase 6 (M7): Notify VM of chapter change
+                            viewModel?.onChapterChanged(href)
                             try {
                                 navigator.evaluateJavascript(ReaderJsScripts.SELECTION_LISTENER)
                             } catch (e: CancellationException) {
@@ -263,6 +265,27 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                         }
                     }
                 }
+                // Phase 6 (M2): TTS sentence highlighting — state-driven (not command).
+                // currentSentenceIndex changes every few seconds; using a command would
+                // flood the SharedFlow buffer (DROP_OLDEST would drop navigation commands).
+                launch {
+                    viewModel?.ttsCurrentSentenceIndex
+                        ?.collect { index ->
+                            if (index >= 0) {
+                                // M10: navigate to sentence locator first (paginated mode)
+                                // then highlight via JS
+                                try {
+                                    navigator.evaluateJavascript(
+                                        TtsJsScripts.highlightSentence(index)
+                                    )
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    Log.e("ReaderHostFragment", "TTS highlight JS failed", e)
+                                }
+                            }
+                        }
+                }
             }
         }
     }
@@ -281,6 +304,13 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                     command.decorations, command.group
                 )
                 is ReaderCommand.ClearSelection -> navigator.clearSelection()
+                // Phase 6 (TTS) commands
+                is ReaderCommand.ExtractSentences -> {
+                    navigator.evaluateJavascript(TtsJsScripts.EXTRACT_SENTENCES)
+                }
+                is ReaderCommand.ClearTtsHighlight -> {
+                    navigator.evaluateJavascript(TtsJsScripts.CLEAR_TTS_HIGHLIGHT)
+                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -299,6 +329,11 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
 
     override fun onSelectionChanged(text: String) {
         viewModel?.onSelectionChanged(text)
+    }
+
+    // Phase 6 (TTS): BridgeCallback — called from WebView thread
+    override fun onSentencesExtracted(json: String) {
+        viewModel?.onSentencesExtracted(json)
     }
 
     // -- EpubNavigatorFragment.Listener --

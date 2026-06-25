@@ -23,3 +23,12 @@
 -keep class org.readium.r2.navigator.** { *; }
 -dontwarn org.readium.r2.**
 -keep @androidx.annotation.Keep class * { *; }
+
+# Phase 6: Media3 TTS keep rules (Oracle S10)
+# Custom SimpleBasePlayer subclass referenced programmatically
+-keep class com.epubreader.app.media.TtsPlayer { *; }
+-keep class com.epubreader.app.media.TtsPlaybackService { *; }
+-keep class com.epubreader.app.media.AndroidTtsEngine { *; }
+-keep class com.epubreader.app.media.TtsControllerImpl { *; }
+# TtsEngineState sealed class (reflection via sealed subtypes)
+-keep class com.epubreader.app.core.tts.** { *; }

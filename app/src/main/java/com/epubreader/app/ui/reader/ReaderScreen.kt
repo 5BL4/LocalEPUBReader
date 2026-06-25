@@ -2,6 +2,7 @@ package com.epubreader.app.ui.reader
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +20,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -80,6 +82,12 @@ fun ReaderScreen(
     val exportState by viewModel.exportState.collectAsStateWithLifecycle()
     val noteEditorState by viewModel.noteEditorState.collectAsStateWithLifecycle()
 
+    // Phase 6: TTS state
+    val ttsPanelState by viewModel.ttsPanelState.collectAsStateWithLifecycle()
+    val sleepTimerState by viewModel.sleepTimerState.collectAsStateWithLifecycle()
+    val ttsEngineState by viewModel.ttsEngineState.collectAsStateWithLifecycle()
+    val ttsPlaybackState by viewModel.ttsPlaybackState.collectAsStateWithLifecycle()
+
     // S1 (NEVER #12): derivedStateOf — bookmark icon only recomposes when
     // the derived boolean actually changes, not on every locator emission.
     // S-E: Uses pre-computed href set (no JSON parsing per scroll).
@@ -95,6 +103,17 @@ fun ReaderScreen(
     val scope = rememberCoroutineScope()
 
     val context = LocalContext.current
+
+    // M4: Show toast when settings are locked during TTS
+    LaunchedEffect(ttsPanelState.isSettingsLocked) {
+        if (ttsPanelState.isSettingsLocked) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.tts_settings_locked),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
 
     // Track which export action the user requested (Save vs Share)
     var pendingExportAction by remember { mutableStateOf<ExportAction?>(null) }
@@ -254,6 +273,13 @@ fun ReaderScreen(
                                 contentDescription = stringResource(R.string.reader_auto_scroll)
                             )
                         }
+                        // Phase 6: TTS icon
+                        IconButton(onClick = { viewModel.toggleTtsPanel() }) {
+                            Icon(
+                                Icons.Default.VolumeUp,
+                                contentDescription = stringResource(R.string.tts_panel_title)
+                            )
+                        }
                     }
                 )
             },
@@ -343,6 +369,49 @@ fun ReaderScreen(
                 selectedText = (noteEditorState as NoteEditorState.Editing).selectedText,
                 onSave = { content -> viewModel.createNote(content) },
                 onDismiss = { viewModel.cancelNoteEditor() }
+            )
+        }
+
+        // Phase 6: TTS control panel
+        if (ttsPanelState.isPanelOpen) {
+            TtsControlPanel(
+                panelState = ttsPanelState,
+                sleepTimerState = sleepTimerState,
+                onPlay = { viewModel.startTts() },
+                onPause = { viewModel.pauseTts() },
+                onStop = { viewModel.stopTts() },
+                onSeekBackward = { viewModel.seekTtsBackward() },
+                onSeekForward = { viewModel.seekTtsForward() },
+                onSpeedChange = { viewModel.setTtsSpeed(it) },
+                onPitchChange = { viewModel.setTtsPitch(it) },
+                onSleepTimer = { durationMs ->
+                    if (durationMs != null) {
+                        viewModel.startSleepTimer(durationMs)
+                    } else {
+                        viewModel.cancelSleepTimer()
+                    }
+                },
+                onSleepTimerEndOfChapter = { viewModel.startSleepTimerEndOfChapter() },
+                onDismiss = { viewModel.closeTtsPanel() }
+            )
+        }
+
+        // Phase 6: Language pack / error dialog (NEVER #28)
+        val showTtsErrorDialog = remember(ttsEngineState) {
+            ttsEngineState is com.epubreader.app.core.tts.TtsEngineState.LanguageMissing ||
+                ttsEngineState is com.epubreader.app.core.tts.TtsEngineState.Error
+        }
+        if (showTtsErrorDialog) {
+            LanguagePackDialog(
+                isError = ttsEngineState is com.epubreader.app.core.tts.TtsEngineState.Error,
+                onInstall = {
+                    val intent = android.content.Intent(
+                        android.speech.tts.TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA
+                    )
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                },
+                onDismiss = { viewModel.stopTts() }
             )
         }
     }

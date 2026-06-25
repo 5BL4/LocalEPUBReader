@@ -1,5 +1,6 @@
 package com.epubreader.app.ui.reader
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -28,6 +29,7 @@ class AndroidNativeApiTest {
         holder.callback = object : BridgeCallback {
             override fun onAutoScrollStopped() { called = true }
             override fun onSelectionChanged(text: String) {}
+            override fun onSentencesExtracted(json: String) {}
         }
         api.onAutoScrollStopped("https://readium_package")
         assertTrue(called)
@@ -39,6 +41,7 @@ class AndroidNativeApiTest {
         holder.callback = object : BridgeCallback {
             override fun onAutoScrollStopped() {}
             override fun onSelectionChanged(text: String) { receivedText = text }
+            override fun onSentencesExtracted(json: String) {}
         }
         api.onSelectionChanged("https://readium_assets", "selected text")
         assertTrue(receivedText == "selected text")
@@ -50,6 +53,7 @@ class AndroidNativeApiTest {
         holder.callback = object : BridgeCallback {
             override fun onAutoScrollStopped() { called = true }
             override fun onSelectionChanged(text: String) {}
+            override fun onSentencesExtracted(json: String) {}
         }
         api.onAutoScrollStopped("https://evil.com")
         assertFalse(called)
@@ -61,6 +65,7 @@ class AndroidNativeApiTest {
         holder.callback = object : BridgeCallback {
             override fun onAutoScrollStopped() {}
             override fun onSelectionChanged(text: String) { called = true }
+            override fun onSentencesExtracted(json: String) {}
         }
         api.onSelectionChanged("https://malicious.org", "hello")
         assertFalse(called)
@@ -81,5 +86,37 @@ class AndroidNativeApiTest {
         assertFalse(AndroidNativeApi.isAllowedOrigin("https://evil.com"))
         assertFalse(AndroidNativeApi.isAllowedOrigin(""))
         assertFalse(AndroidNativeApi.isAllowedOrigin("null"))
+    }
+
+    @Test
+    fun `allowed origin invokes onSentencesExtracted callback`() {
+        var receivedJson = ""
+        holder.callback = object : BridgeCallback {
+            override fun onAutoScrollStopped() {}
+            override fun onSelectionChanged(text: String) {}
+            override fun onSentencesExtracted(json: String) { receivedJson = json }
+        }
+        val testJson = """[{"id":0}]"""
+        api.onSentencesExtracted("https://readium_package", testJson)
+        assertEquals(testJson, receivedJson)
+    }
+
+    @Test
+    fun `blocked origin does not invoke onSentencesExtracted callback`() {
+        var called = false
+        holder.callback = object : BridgeCallback {
+            override fun onAutoScrollStopped() {}
+            override fun onSelectionChanged(text: String) {}
+            override fun onSentencesExtracted(json: String) { called = true }
+        }
+        api.onSentencesExtracted("https://evil.com", """[{"id":0}]""")
+        assertFalse(called)
+    }
+
+    @Test
+    fun `null callback does not crash on onSentencesExtracted`() {
+        holder.callback = null
+        // Should not throw NullPointerException
+        api.onSentencesExtracted("https://readium_package", "{}")
     }
 }

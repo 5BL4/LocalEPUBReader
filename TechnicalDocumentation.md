@@ -1,11 +1,11 @@
 # EpubReader — 技术文档 (Technical Documentation)
 
 > **项目**: 本地 EPUB 阅读器 (EpubReader)
-> **状态**: Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅ → Phase 4 ✅ → Phase 5 ✅ 完成
+> **状态**: Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅ → Phase 4 ✅ → Phase 5 ✅ → Phase 6 ✅ 完成
 > **日期**: 2026-06-25
-> **下一步**: 等待用户指令后开始 Phase 6 (Media3 TTS 听书)
+> **下一步**: 等待用户指令后开始 Phase 7 (测试驱动 + 同步)
 
-本文档合并了 Phase 1 (基础架构与同步数据模型)、Phase 2 (书架 UI 与路由)、Phase 3 (Readium v3.x 引擎集成)、Phase 4 (JS Bridge 与交互系统)、Phase 5 (知识管理与导出) 的全部进度文档。
+本文档合并了 Phase 1 (基础架构与同步数据模型)、Phase 2 (书架 UI 与路由)、Phase 3 (Readium v3.x 引擎集成)、Phase 4 (JS Bridge 与交互系统)、Phase 5 (知识管理与导出)、Phase 6 (Media3 TTS 听书) 的全部进度文档。
 
 ---
 
@@ -491,6 +491,171 @@ JS Bridge 工厂捕获 `BridgeCallbackHolder` (小型对象), 而非 Fragment。
 
 ---
 
+# Phase 6 — Media3 TTS 听书
+
+> **状态**: ✅ 完成 (构建通过, 116 项测试全部通过, Oracle 计划审查 ACCEPT_WITH_CHANGES, Oracle 结果审查 ACCEPT_WITH_CHANGES, 所有 must-fix 已修复)
+
+## 6.1 关键架构决策 (Oracle + Council + 架构师审查通过)
+
+### D1: TtsPlayer extends SimpleBasePlayer (章节级 MediaItem)
+- 自定义 Player 包装 TextToSpeech, @OptIn(UnstableApi)
+- **Council M9**: 1 个 MediaItem = 1 个章节 (非句子), 避免通知栏重建风暴 (200 句 = 200 次重建)
+- 句子进度通过 TtsBus.currentSentenceIndex 内部追踪, 不经过 MediaItem 转换
+- handleSetPlayWhenReady→speak/pause, handleStop→stop, handleSetMediaItems→读取 TtsBus.sentences.value (M1 单路径), handleSeek→句子索引映射, handleRelease→tts.shutdown()
+- 手动 AudioManager 音频焦点 (USAGE_MEDIA + CONTENT_TYPE_SPEECH, 短暂丢失暂停而非 duck)
+
+### D2: TtsPlaybackService extends MediaSessionService
+- @AndroidEntryPoint (Hilt)
+- **Oracle M5**: super.onCreate() (Hilt 注入) → createNotificationChannel (NEVER #25) → MediaSession + DefaultMediaNotificationProvider
+- onGetSession 返回 session; onTaskRemoved 非播放时 stopSelf
+- **Oracle S7**: STATE_ENDED + 无 controller → stopSelf (防止通知残留)
+- **Oracle S9**: onCreate 重置 TtsBus (清除进程死亡残留状态)
+- Manifest: foregroundServiceType="mediaPlayback" + intent-filter
+
+### D3: AndroidTtsEngine — TTS 状态机 + 看门狗 + 线程安全
+- 状态机: Uninitialized → Initializing → Ready / LanguageMissing(locale) / Error(reason)
+- **NEVER #28**: speak() 仅在 Ready 状态执行, 否则静默丢弃
+- **Council M13**: 2 秒看门狗定时器 — speak() 后启动, onStart 取消, 超时 → Error + shutdown + 重新初始化
+- **Council M11**: UtteranceProgressListener 回调通过 Dispatchers.Main.immediate 切换到主线程
+- **Council S11**: 长句分块 (>800 字符按词边界分割)
+- isLanguageAvailable → LANG_MISSING_DATA → LanguageMissing 状态 → UI 提示安装
+- 接口提取 (Oracle S2): TtsEngine 接口在 core/tts/, AndroidTtsEngine 实现在 media/, 可测试
+
+### D4: TtsBus @Singleton — 共享状态 (精简版)
+- **Oracle S1**: 仅持有 MediaController 无法承载的状态 (无 playbackState — 从 Player.Listener 派生)
+- 3 个 StateFlow: sentences (按需数据源, 非驱动), engineState, currentSentenceIndex
+- **Council M14**: generationId — 每次 JS 提取生成 UUID, 防止跨章节高亮竞态
+- clear() 方法: 切书/停止时调用, 防止内存泄漏
+
+### D5: TtsController 接口 + TtsControllerImpl — UI 与服务桥梁
+- 接口在 core/tts/ (纯 Kotlin), 实现在 media/ (@Singleton, 注入 @ApplicationContext — NEVER #2)
+- 管理 MediaController 生命周期 (buildAsync, release)
+- **Oracle S8**: 未连接契约 — play() 排队, 连接后重放; 其他命令丢弃+日志
+- **Oracle S4**: 连接时从 prefs 初始化 speed/pitch
+- **架构师 M3 修正**: disconnect() 仅释放 MediaController, 不停止播放 — 服务通过前台通知继续后台播放
+
+### D6: JS 句子提取 + Locator 特征值 (架构师指南)
+- JS 提取特征值 (href + progression), Kotlin 组装完整 Locator (via publication.locatorFromLink)
+- **Council M10**: TtsSentence 含 Locator — 支持分页模式翻页 + 进度保存
+- 高亮流程: currentSentenceIndex 变化 → navigator.go(locator) 翻页 → HIGHLIGHT_SENTENCE JS
+- CJK 分句支持 (。！？); DOM Range 存储在 window.__epubTtsRanges
+
+### D7: 睡眠定时器 (ReaderVM 协程)
+- 预设: 5/10/15/30 分钟 + "本章结束"
+- 协程实现 (viewModelScope + delay), 到期 pauseTts()
+- **架构师 M3**: 因 onCleared 不停止 TTS, 定时器在 ReaderVM 中正确 (仅在阅读器打开时需要)
+
+### D8: 后台播放生命周期 (架构师 M3 修正)
+- **onCleared() 仅 disconnect(), 不 stop()** — 服务通过前台通知继续后台播放
+- stop() 仅在: 用户显式停止 / 切换书籍 / 到达书末 时调用
+- 重连: 用户返回阅读器 → ReaderVM init connect() → MediaController 重建
+
+## 6.2 已完成的交付物
+
+### Phase 6 新增文件 — core/tts/ (纯 Kotlin, 6 个)
+| 文件 | 说明 |
+|------|------|
+| `TtsEngineState.kt` | 密封接口: Uninitialized/Initializing/Ready/LanguageMissing(locale)/Error(reason) |
+| `TtsPlaybackState.kt` | 密封接口: Idle/Playing/Paused/Ended (从 Player.Listener 派生, 非 TtsBus) |
+| `TtsSentence.kt` | 数据类: id, text, locator: Locator? (M10 — 支持翻页+进度保存) |
+| `TtsBus.kt` | @Singleton: sentences/engineState/currentSentenceIndex/generationId StateFlow + clear() |
+| `TtsController.kt` | 接口: StateFlows + connect/play/pause/stop/setSpeed/setPitch/seekToSentence/disconnect |
+| `TtsEngine.kt` | 接口: state StateFlow + initialize/speak/stop/setSpeechRate/setPitch/shutdown/setCallbacks + Callbacks + WATCHDOG_TIMEOUT_MS=2000 + MAX_UTTERANCE_LENGTH=800 |
+
+### Phase 6 新增文件 — media/ (Android/Media3, 5 个)
+| 文件 | 说明 |
+|------|------|
+| `AndroidTtsEngine.kt` | TtsEngine 实现. TextToSpeech 包装. 状态机 (NEVER #28). 看门狗 (M13). 线程安全 (M11, Dispatchers.Main.immediate). 长句分块 (S11). createInstallLanguageDataIntent() |
+| `TtsPlayer.kt` | SimpleBasePlayer (@OptIn UnstableApi). 章节级 MediaItem (M9). 手动 AudioManager 音频焦点 (NEVER #11). TtsBus.sentences 按需读取 (M1). handleSetPlaybackParameters→setSpeechRate/setPitch (M3). 引擎状态观察 (M2 — Ready 时自动恢复播放). TtsEngine.Callbacks: onStart/onDone(下一句或 STATE_ENDED)/onError |
+| `TtsPlaybackService.kt` | MediaSessionService (@AndroidEntryPoint). super.onCreate()→channel (M5)→MediaSession. STATE_ENDED+无 controller→stopSelf (S7). onCreate 重置 TtsBus (S9) |
+| `TtsControllerImpl.kt` | TtsController 实现 (@Singleton). @ApplicationContext (NEVER #2). MediaController buildAsync. 未连接排队 (S8). Player.Listener 派生 playbackState (S1). setPlaybackParameters 触发 handleSetPlaybackParameters (M3). disconnect 不停止播放 (M3) |
+| `TtsModule.kt` | Hilt @Binds TtsController→TtsControllerImpl |
+
+### Phase 6 新增文件 — ui/reader/ (4 个)
+| 文件 | 说明 |
+|------|------|
+| `TtsUiState.kt` | @Immutable TtsPanelState (isPanelOpen, isSettingsLocked, totalSentences, currentSentence, speed, pitch) + SleepTimerState 密封接口 (Inactive/Active/EndOfChapter) |
+| `TtsControlPanel.kt` | ModalBottomSheet: play/pause/stop, seek backward/forward, speed slider (0.5-3.0), pitch slider (0.5-2.0), sleep timer 预设 (5/10/15/30m + end of chapter + cancel) |
+| `LanguagePackDialog.kt` | AlertDialog: LanguageMissing (Install→ACTION_INSTALL_TTS_DATA) + Error 变体 |
+| `TtsJsScripts.kt` | EXTRACT_SENTENCES (文本节点遍历, CJK 分句, DOM Range 存储, JSON {id,text,href,progression}, 幂等), highlightSentence(index) (高亮 span + scrollIntoView), CLEAR_TTS_HIGHLIGHT |
+
+### Phase 6 修改文件 (10)
+| 文件 | 变更 |
+|------|------|
+| `AndroidManifest.xml` | +FOREGROUND_SERVICE, +POST_NOTIFICATIONS, +TtsPlaybackService (foregroundServiceType="mediaPlayback" + intent-filter) |
+| `EpubReaderApplication.kt` | onCreate 创建 TTS Notification Channel (belt-and-suspenders, NEVER #25) |
+| `AndroidNativeApi.kt` | +onSentencesExtracted @JavascriptInterface (origin 校验 NEVER #8) + BridgeCallback.onSentencesExtracted |
+| `ReaderCommand.kt` | +ExtractSentences, +ClearTtsHighlight (无 HighlightSentence — 状态驱动 M2) |
+| `ReaderViewModel.kt` | +注入 TtsController, +TTS StateFlows (ttsPanelState/sleepTimerState/ttsEngineState/ttsPlaybackState/ttsCurrentSentenceIndex/ttsGenerationId), +init connect (S4) + observe, +startTts/pauseTts/stopTts/seekTts/setTtsSpeed/setTtsPitch/onSentencesExtracted (Dispatchers.Default S5)/parseSentences (CancellationException re-throw S4)/buildLocator (locatorFromLink)/handleChapterEnd (M8)/nextReadingOrderLink/onChapterChanged (M7 isTtsNavigating)/saveTtsProgress (S1 真实 Locator)/sleep timer, +onCleared disconnect only (M3) |
+| `ReaderHostFragment.kt` | +BridgeCallback.onSentencesExtracted, +handleCommand ExtractSentences/ClearTtsHighlight, +currentSentenceIndex 收集器 (状态驱动 M2) → highlightSentence JS, +href 变化 → onChapterChanged (M7) |
+| `ReaderScreen.kt` | +TTS 状态收集, +VolumeUp 图标 (TopAppBar), +TtsControlPanel 覆盖层, +LanguagePackDialog 覆盖层, +LaunchedEffect Toast (M12 设置锁定提示) |
+| `proguard-rules.pro` | +TtsPlayer/TtsPlaybackService/AndroidTtsEngine/TtsControllerImpl/core.tts keep 规则 (S10) |
+| `res/values/strings.xml` | +20 TTS 字符串 (notification channel, panel, controls, sleep timer, language missing, error) |
+
+### Phase 6 测试 (20 项新增, 116 项总计)
+| 测试文件 | 测试数 | 验证点 |
+|----------|--------|--------|
+| `TtsEngineStateTest` | 7 | 状态转换, NEVER #28 契约 (Ready 前 speak 被拒绝), 看门狗/分块常量 |
+| `TtsJsScriptsTest` | 10 | EXTRACT_SENTENCES (onSentencesExtracted 调用, origin 传递, 幂等, CJK, JSON 字段), highlightSentence (高亮类, index 参数, scrollIntoView), CLEAR_TTS_HIGHLIGHT |
+| `AndroidNativeApiTest` (扩展) | +3 | onSentencesExtracted origin 校验 (NEVER #8), 阻止 origin, null callback 安全 |
+
+## 6.3 Oracle + Council 审查结论
+
+### 计划审查 (ora-1): ACCEPT_WITH_CHANGES
+- 8 个必修项 (M1-M8): 单控制路径, 状态驱动高亮, onCleared 生命周期, Channel 顺序, 测试覆盖, 手动导航, 下一章链接
+- 12 个建议项 (S1-S12): 精简 TtsBus, TtsEngine 接口, API 26 守卫, prefs 初始化, JSON 解析线程, Readium Decorations, 服务自停, 未连接契约, TtsBus 重置, ProGuard, 长句分块, CJK
+
+### Council 风险预设: 3 个致命反模式 + 4 架构转向
+- **Top Risk #1**: 句子作为 MediaItem → 通知栏灾难 → 改为章节级 (M9)
+- **Top Risk #4/#8**: 缺少 Locator 映射 → 分页 UX 灾难 + 进度丢失 → TtsSentence 含 Locator (M10)
+- **Top Risk #7**: UtteranceProgressListener 线程不安全 → Dispatchers.Main.immediate (M11)
+- **Top Risk #6**: DOM Range 失效 → TTS 期间锁定 UserSettings (M12)
+- **Top Risk #9**: TTS 引擎僵尸化 → 2 秒看门狗 (M13)
+- 架构转向: Generation ID 防竞态 (M14), 状态单一真相源 (S1)
+
+### 架构师最终审查: 批准 + M3 强制修正
+- **M3 修正**: onCleared() 仅 disconnect() 不 stop() — 保留后台播放 (核心卖点)
+- **Locator 落地指南**: JS 传特征值 (href + progression), Kotlin 用 locatorFromLink 组装
+- 细节打磨: Seek 映射, generationId 清理, UserSettings 锁定 UX (alpha 0.5 + Toast)
+
+### 结果审查 (ora-2): ACCEPT_WITH_CHANGES — 所有必修项已修复
+- **M1 (致命)**: TtsEngine.initialize() 从未调用 → startPlayback() 中调用 initialize() ✅
+- **M2 (致命)**: 无 resume-when-ready 机制 → TtsPlayer init 观察引擎状态, Ready 时自动恢复 ✅
+- **M3 (高)**: speed/pitch 死控件 → handleSetPlaybackParameters + setPlaybackParameters ✅
+- **M4 (中)**: UserSettings 锁未执行 → LaunchedEffect Toast 提示 ✅
+- **S1**: saveTtsProgress 死代码 + 硬编码 0.5 → 使用 currentSentences 真实 Locator ✅
+- **S4**: parseSentences 吞 CancellationException → try/catch re-throw ✅
+
+## 6.4 关键流程
+
+### 播放流程:
+1. 用户点 TTS 图标 → isTtsPanelOpen=true
+2. 用户点 Play → startTts() → 锁定 UserSettings (M12) → 发出 ExtractSentences command
+3. Fragment 执行 EXTRACT_SENTENCES JS → JS 返回 JSON → AndroidNativeApi.onSentencesExtracted(origin, json)
+4. Fragment → ReaderVM.onSentencesExtracted(json) → Dispatchers.Default 解析 (S5) → List<TtsSentence(id,text,locator)> + generationId (M14)
+5. ReaderVM → ttsController.play(sentences) → TtsControllerImpl 写 TtsBus.sentences + generationId → MediaController.setMediaItem(章节级 M9) + play
+6. TtsPlayer.handleSetMediaItems → 读取 TtsBus.sentences.value (M1 单路径) → handleSetPlayWhenReady → startPlayback()
+7. 引擎未 Ready → ttsEngine.initialize() (M1) → Ready 后自动恢复 (M2) → TtsEngine.speak(sentence_0) + 看门狗 (M13)
+8. UtteranceProgressListener.onStart (Dispatchers.Main.immediate M11) → TtsBus.currentSentenceIndex=0 + 取消看门狗
+9. ReaderVM 观察 currentSentenceIndex → Fragment 收集 (M2 状态驱动) → HIGHLIGHT_SENTENCE JS
+
+### 章节过渡:
+1. 最后一句 onDone → TtsPlayer STATE_ENDED (章节级 M9)
+2. ReaderVM 观察 STATE_ENDED → nextReadingOrderLink(currentHref) (M8)
+3. 有下一章 → isTtsNavigating=true → navigator.go(nextLink) → href 变化 → onChapterChanged → ExtractSentences → 继续
+4. 无下一章 → 停止 TTS + 解锁 UserSettings + UI 显示"已到书末"
+
+### 手动导航中途打断 (M7):
+1. 用户点 TOC 跳转 → href 变化 → onChapterChanged 检测 isTtsNavigating=false 且 TTS 在播放
+2. ttsController.stop() + ClearTtsHighlight + 重新提取新章节句子
+
+### 后台播放 (架构师 M3):
+1. 用户离开阅读器 → ReaderVM.onCleared() → ttsController.disconnect() (仅释放 MediaController)
+2. 服务通过前台通知继续后台播放
+3. 用户返回 → ReaderVM init connect() → MediaController 重建 → 恢复 UI 控制
+
+---
+
 # 锁定的依赖版本 (后续 Phase 共用)
 
 | 依赖 | 版本 | 备注 |
@@ -536,6 +701,13 @@ com.epubreader.app
 │   ├── StringProvider.kt             本地化字符串接口 (Phase 2 M5)
 │   ├── readium/
 │   │   └── LocatorMapper.kt          Locator↔String 转换 (Phase 3 D2)
+│   ├── tts/                          [Phase 6] TTS 核心契约 (纯 Kotlin)
+│   │   ├── TtsEngineState.kt         密封接口: Uninitialized/Initializing/Ready/LanguageMissing/Error
+│   │   ├── TtsPlaybackState.kt       密封接口: Idle/Playing/Paused/Ended
+│   │   ├── TtsSentence.kt            数据类: id, text, locator (M10)
+│   │   ├── TtsBus.kt                 @Singleton 共享状态 (sentences/engineState/currentSentenceIndex/generationId)
+│   │   ├── TtsController.kt          接口: StateFlows + connect/play/pause/stop/seek/disconnect
+│   │   └── TtsEngine.kt              接口: state + initialize/speak/stop/shutdown + Callbacks + 常量
 │   ├── export/                       [Phase 5] Markdown 导出
 │   │   ├── MarkdownExporter.kt       接口 + 纯导出数据类 (不依赖 Room 实体)
 │   │   └── MarkdownExporterImpl.kt   flexmark HTML→MD 实现 + 章节分组
@@ -565,6 +737,12 @@ com.epubreader.app
 │   ├── AppBindingsModule.kt          (9 个 @Binds)
 │   ├── ImportModule.kt               (BookImporter + MetadataParser→ReadiumMetadataParser)
 │   └── ReadiumModule.kt              [Phase 3] DefaultHttpClient/AssetRetriever/PublicationOpener
+├── media/                            [Phase 6] Media3 TTS 实现
+│   ├── AndroidTtsEngine.kt           TtsEngine 实现 (状态机+看门狗+线程安全+分块)
+│   ├── TtsPlayer.kt                  SimpleBasePlayer (章节级 MediaItem+单路径+音频焦点)
+│   ├── TtsPlaybackService.kt         MediaSessionService (Channel+Hilt+自停)
+│   ├── TtsControllerImpl.kt          TtsController 实现 (MediaController+排队契约)
+│   └── TtsModule.kt                  Hilt @Binds TtsController→TtsControllerImpl
 ├── navigation/                       路由定义
 │   ├── Routes.kt                     (BookshelfRoute, ReaderRoute)
 │   └── EpubReaderNavHost.kt          (ReaderScreen 替换占位)
@@ -595,7 +773,11 @@ com.epubreader.app
         ├── SelectionToolbar.kt       [Phase 4/5] 选词工具栏 + SelectionState (+Note 按钮 Phase 5)
         ├── KnowledgeUiState.kt       [Phase 5] KnowledgeItem/KnowledgeState + ExportState + NoteEditorState
         ├── KnowledgePanel.kt         [Phase 5] 知识面板 ModalBottomSheet (高亮/笔记/书签列表 + 导出按钮)
-        └── NoteEditorDialog.kt       [Phase 5] 笔记编辑器 AlertDialog
+        ├── NoteEditorDialog.kt       [Phase 5] 笔记编辑器 AlertDialog
+        ├── TtsUiState.kt             [Phase 6] TtsPanelState + SleepTimerState
+        ├── TtsControlPanel.kt        [Phase 6] TTS 控制 ModalBottomSheet (播放/速度/音调/睡眠定时器)
+        ├── LanguagePackDialog.kt     [Phase 6] 语言包缺失/错误对话框
+        └── TtsJsScripts.kt           [Phase 6] 句子提取+高亮 JS (CJK 分句, DOM Range, Locator 特征值)
     ```
 
 ---
@@ -651,6 +833,19 @@ com.epubreader.app
 - **笔记创建顺序依赖** (Phase 5 D5/Oracle S2): 先 HighlightEntity 后 NoteEntity(highlightUuid), 高亮失败不创建笔记
 - **一次性查询导出** (Phase 5 D6): `getByBook` suspend 查询, 非 StateFlow.value (保证新鲜数据)
 - **面板互斥** (Phase 5 D5/Oracle S3): 开启 KnowledgePanel 关闭 SearchPanel, 反之亦然
+
+## Media3 TTS 约定 (Phase 6)
+- **SimpleBasePlayer 章节级 MediaItem** (Phase 6 D1/Council M9): 1 MediaItem = 1 章节, 句子进度通过 TtsBus 内部追踪 (避免通知栏重建风暴)
+- **TtsBus 单路径数据源** (Phase 6 D4/Oracle M1): TtsPlayer 读取 TtsBus.sentences.value on demand, 不收集 StateFlow (避免双路径竞态)
+- **句子高亮状态驱动** (Phase 6 D6/Oracle M2): currentSentenceIndex 是 StateFlow, 非 ReaderCommand (避免淹没 SharedFlow 缓冲区)
+- **TtsSentence 含 Locator** (Phase 6 D6/Council M10): 支持分页模式翻页 + 进度保存; JS 传特征值, Kotlin 用 locatorFromLink 组装
+- **TTS 引擎状态机** (Phase 6 D3/NEVER #28): speak() 仅在 Ready 执行; 2 秒看门狗 (M13); UtteranceProgressListener 回调切 Dispatchers.Main.immediate (M11)
+- **后台播放生命周期** (Phase 6 D8/架构师 M3): onCleared() 仅 disconnect() 不 stop() — 服务通过前台通知继续; stop() 仅在显式停止/切书/书末
+- **generationId 防竞态** (Phase 6 D4/Council M14): 每次 JS 提取生成 UUID, 高亮命令校验 generationId 防跨章节崩溃
+- **UserSettings 锁定** (Phase 6 D6/Council M12): TTS 期间锁定排版设置 (防 DOM Range 失效), UI alpha 0.5 + Toast
+- **Notification Channel 顺序** (Phase 6 D2/Oracle M5): super.onCreate() (Hilt 注入) → createChannel → MediaSession
+- **playbackState 单一真相源** (Phase 6 D4/Oracle S1): 从 Player.Listener 派生, 不存 TtsBus (避免双源竞态)
+- **未连接排队契约** (Phase 6 D5/Oracle S8): play() 排队, 连接后重放; 其他命令丢弃+日志
 - **文件名净化** (Phase 5 D4/Oracle S5): `replace(Regex("[\\\\/:*?\"<>|]"), "_").take(60)`
 - **blockquote 逐行前缀** (Phase 5 D2/Oracle S7): 多行高亮文本每行加 `> ` 前缀
 
@@ -679,13 +874,14 @@ com.epubreader.app
 | 22 | toRoute<T>() 提取参数 | ✅ | ReaderViewModel savedStateHandle.toRoute<ReaderRoute>() |
 | 23 | @Keep on @JavascriptInterface | ✅ | AndroidNativeApi @Keep + ProGuard 规则 (Phase 4) |
 | 24 | NIO + yield() 大文件拷贝 | ✅ | EpubBookImporter |
-| 26 | try-catch / CoroutineExceptionHandler | ✅ | runCatchingAsync + launch(handler) + 命令处理 try-catch + CancellationException re-throw (Phase 4 MF1); SAF 写入 try-catch + CancellationException re-throw (Phase 5 Oracle M3) |
+| 26 | try-catch / CoroutineExceptionHandler | ✅ | runCatchingAsync + launch(handler) + 命令处理 try-catch + CancellationException re-throw (Phase 4 MF1); SAF 写入 try-catch (Phase 5 Oracle M3); parseSentences try-catch + CancellationException re-throw (Phase 6 Oracle S4) |
 | 27 | usableSpace 校验 + finally 清理 | ✅ | EpubBookImporter |
+| 28 | TTS OnInit SUCCESS 前禁 speak | ✅ | AndroidTtsEngine 状态机: speak() 仅在 Ready 执行 (Phase 6 D3/NEVER #28) |
 | 29 | DataStore 强类型 Key | ✅ | PreferenceKeys internal object |
 
 ---
 
-# 测试覆盖 (90 项)
+# 测试覆盖 (116 项)
 
 | 测试文件 | 测试数 | Phase | 验证点 |
 |----------|--------|-------|--------|
@@ -698,12 +894,14 @@ com.epubreader.app
 | `ReadiumMetadataParserTest` | 5 | 3 | NEVER #14, 封面提取, Publication 关闭 |
 | `ReaderViewModelTest` | 4 | 3 | UiState/依赖装配 (Bundle JVM 限制) |
 | `BookRepositoryImplReparseTest` | 4 | 3 | reparseMetadata 流程 |
-| `AndroidNativeApiTest` | 6 | 4 | NEVER #8 (origin 校验), null callback 安全 |
+| `AndroidNativeApiTest` | 9 | 4/6 | NEVER #8 (origin 校验), null callback 安全, +onSentencesExtracted (Phase 6) |
 | `ReaderJsScriptsTest` | 10 | 4 | NEVER #9 (touchstart→cancelAnimationFrame), origin 传递, 幂等性 |
 | `ReaderUiStatePhase4Test` | 9 | 4 | UiState/TocItem/SearchState/SelectionState/ReaderCommand |
 | `MarkdownExporterTest` | 15 | 5 | HTML→MD 转换 (flexmark), 章节分组, 片段归一化, Unsorted, 多行 blockquote |
 | `KnowledgeUiStateTest` | 15 | 5 | KnowledgeState/KnowledgeItem, ExportState 四态, NoteEditorState 两态, ReaderUiState Phase 5 字段 |
-| **合计** | **90** | | **全部通过** |
+| `TtsEngineStateTest` | 7 | 6 | 状态转换, NEVER #28 契约, 看门狗/分块常量 |
+| `TtsJsScriptsTest` | 10 | 6 | EXTRACT_SENTENCES (CJK, JSON, 幂等), highlightSentence, CLEAR_TTS_HIGHLIGHT |
+| **合计** | **116** | | **全部通过** |
 
 ---
 
@@ -724,18 +922,26 @@ com.epubreader.app
 - core/export 纯数据类 (不依赖 Room 实体) — Oracle M1
 - 笔记创建: 先高亮后笔记 (FK 顺序依赖) — Oracle S2
 
-### Phase 6 (Media3 TTS)
-- `FOREGROUND_SERVICE_MEDIA_PLAYBACK` 权限已声明 (NEVER #10)
-- 启动前台服务前注册 Notification Channel (NEVER #25)
-- TTS 状态机 (Initializing/Ready/Error) — `OnInitListener` SUCCESS 前不调 `speak()` (NEVER #28)
-- AudioAttributes + setHandleAudioFocus(true) (NEVER #11)
-- 前台启动, 后台 MediaSession 维持 (NEVER #16)
+### Phase 6 (Media3 TTS 听书) — ✅ 完成
+- `FOREGROUND_SERVICE_MEDIA_PLAYBACK` + `FOREGROUND_SERVICE` + `POST_NOTIFICATIONS` 权限已声明 (NEVER #10)
+- Notification Channel 在 super.onCreate() 后创建 (NEVER #25, Oracle M5)
+- TTS 状态机 (Uninitialized/Initializing/Ready/LanguageMissing/Error) — speak() 仅在 Ready (NEVER #28)
+- 手动 AudioManager 音频焦点 (USAGE_MEDIA + CONTENT_TYPE_SPEECH, NEVER #11)
+- MediaController 触发服务启动, 合规 (NEVER #16)
+- SimpleBasePlayer 章节级 MediaItem (Council M9 — 避免通知栏重建风暴)
+- TtsEngine 看门狗 (Council M13) + 线程安全 (Council M11) + 长句分块 (Council S11)
+- TtsSentence 含 Locator (Council M10 — 分页翻页 + 进度保存)
+- generationId 防跨章节高亮竞态 (Council M14)
+- onCleared() 仅 disconnect 不 stop — 后台播放继续 (架构师 M3 修正)
+- JS 句子提取 + CJK 分句 + DOM Range 高亮
+- 睡眠定时器 (5/10/15/30m + 本章结束)
 
 ### Phase 7 (测试驱动 + 同步)
 - Repository 双数据源测试, 协程异常边界, Turbine, Compose UI E2E
 - SyncManager: LWW 合并 (对比 updatedAt, isDeleted=1 优先)
 - 可能需要领域模型映射层 (SF-2)
 - Locator JSON canonical 排序 (S10 — 同步确定性)
+- TTS 集成测试 (需 Robolectric 或设备测试 — SimpleBasePlayer Looper 依赖)
 
 ---
 
@@ -745,7 +951,7 @@ com.epubreader.app
 # 编译 + 生成 APK
 .\gradlew.bat :app:assembleDebug --no-daemon
 
-# 运行单元测试 (90 项全部通过)
+# 运行单元测试 (116 项全部通过)
 .\gradlew.bat :app:testDebugUnitTest --no-daemon
 
 # 运行插桩测试 (需连接模拟器/设备)

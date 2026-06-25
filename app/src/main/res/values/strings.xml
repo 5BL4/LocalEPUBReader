@@ -58,4 +58,27 @@
     <string name="reader_note_deleted">Note deleted</string>
     <string name="reader_highlight_deleted">Highlight deleted</string>
     <string name="reader_bookmark_deleted">Bookmark deleted</string>
+
+    <!-- Phase 6: TTS -->
+    <string name="tts_notification_channel_name">Audiobook Playback</string>
+    <string name="tts_notification_channel_desc">Media controls for text-to-speech playback</string>
+    <string name="tts_panel_title">Listen</string>
+    <string name="tts_play_pause">Play/Pause</string>
+    <string name="tts_stop">Stop</string>
+    <string name="tts_prev_sentence">Previous sentence</string>
+    <string name="tts_next_sentence">Next sentence</string>
+    <string name="tts_speed">Speed</string>
+    <string name="tts_pitch">Pitch</string>
+    <string name="tts_sleep_timer">Sleep timer</string>
+    <string name="tts_sleep_remaining">%1$d min remaining</string>
+    <string name="tts_sleep_end_of_chapter">End of chapter</string>
+    <string name="tts_sleep_chapter_end">Chapter end</string>
+    <string name="tts_sleep_cancel">Cancel timer</string>
+    <string name="tts_language_missing_title">Language Data Missing</string>
+    <string name="tts_language_missing_message">TTS language data is not installed. Please download it from system settings.</string>
+    <string name="tts_install_language">Install</string>
+    <string name="tts_error_title">TTS Error</string>
+    <string name="tts_error_message">The TTS engine encountered an error. Please check your device\'s TTS settings.</string>
+    <string name="tts_dismiss">Dismiss</string>
+    <string name="tts_settings_locked">Listening is active. Formatting cannot be changed during playback.</string>
 </resources>

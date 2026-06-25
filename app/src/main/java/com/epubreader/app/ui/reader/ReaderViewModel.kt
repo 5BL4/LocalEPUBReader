@@ -20,6 +20,10 @@ import com.epubreader.app.core.fold
 import com.epubreader.app.core.getOrNull
 import com.epubreader.app.core.readium.toJsonString
 import com.epubreader.app.core.readium.toLocator
+import com.epubreader.app.core.tts.TtsController
+import com.epubreader.app.core.tts.TtsEngineState
+import com.epubreader.app.core.tts.TtsPlaybackState
+import com.epubreader.app.core.tts.TtsSentence
 import com.epubreader.app.data.local.entity.BookmarkEntity
 import com.epubreader.app.data.local.entity.HighlightEntity
 import com.epubreader.app.data.local.entity.NoteEntity
@@ -49,6 +53,12 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toPersistentList
 import org.readium.r2.navigator.Decoration
@@ -82,6 +92,7 @@ class ReaderViewModel @Inject constructor(
     private val publicationOpener: PublicationOpener,
     private val assetRetriever: AssetRetriever,
     private val markdownExporter: MarkdownExporter,
+    private val ttsController: TtsController,
     private val dispatchers: DispatchersProvider,
     private val stringProvider: StringProvider,
     private val errorChannel: ErrorChannel,
@@ -229,6 +240,36 @@ class ReaderViewModel @Inject constructor(
     )
     val commands = _commands.asSharedFlow()
 
+    // Phase 6: TTS state (separate StateFlows — NEVER #12)
+    private val _ttsPanelState = MutableStateFlow(TtsPanelState())
+    val ttsPanelState: StateFlow<TtsPanelState> = _ttsPanelState.asStateFlow()
+
+    private val _sleepTimerState = MutableStateFlow<SleepTimerState>(SleepTimerState.Inactive)
+    val sleepTimerState: StateFlow<SleepTimerState> = _sleepTimerState.asStateFlow()
+
+    /** TTS engine state forwarded from TtsController. */
+    val ttsEngineState: StateFlow<TtsEngineState> = ttsController.engineState
+
+    /** TTS playback state forwarded from TtsController. */
+    val ttsPlaybackState: StateFlow<TtsPlaybackState> = ttsController.playbackState
+
+    /** Current sentence index (state-driven highlighting — Oracle M2). */
+    val ttsCurrentSentenceIndex: StateFlow<Int> = ttsController.currentSentenceIndex
+
+    /** Current generation ID (stale-highlight guard — Council M14). */
+    val ttsGenerationId: StateFlow<String> = ttsController.generationId
+
+    private var sleepTimerJob: Job? = null
+    private var ttsNavigationJob: Job? = null
+
+    /** Flag to distinguish TTS-driven navigation from user-driven (Oracle M7). */
+    @Volatile
+    private var isTtsNavigating = false
+
+    /** Current chapter href for sentence extraction + chapter transition. */
+    @Volatile
+    private var currentChapterHref: String = ""
+
     private var publication: Publication? = null
 
     /** Derived EpubPreferences from preferences repository flow. */
@@ -254,6 +295,9 @@ class ReaderViewModel @Inject constructor(
     private var saveJob: Job? = null
     private var searchJob: Job? = null
 
+    // S1: Store current TTS sentences for progress saving
+    private var currentSentences: List<TtsSentence> = emptyList()
+
     // Parallel lists for navigation (Oracle S3: TocItem is display-only)
     private var tocLinks: List<Link> = emptyList()
     private var searchLocators: List<Locator> = emptyList()
@@ -277,6 +321,51 @@ class ReaderViewModel @Inject constructor(
         }
         // Highlight decorations are applied via highlightDecorations StateFlow,
         // collected directly by the Fragment (avoids SharedFlow timing issues).
+
+        // Phase 6: Connect TTS controller (Oracle S4: init speed/pitch from prefs)
+        viewModelScope.launch(exceptionHandler.handler) {
+            val prefs = preferencesRepository.preferences.first()
+            ttsController.connect(prefs.ttsRate, prefs.ttsPitch)
+        }
+
+        // Phase 6: Observe TTS engine state for language missing / error
+        viewModelScope.launch(exceptionHandler.handler) {
+            ttsEngineState.collect { state ->
+                when (state) {
+                    is TtsEngineState.LanguageMissing,
+                    is TtsEngineState.Error -> {
+                        // UI observes ttsEngineState directly to show dialog
+                    }
+                    else -> { /* no-op */ }
+                }
+            }
+        }
+
+        // Phase 6: Observe playback state for chapter transition (Oracle M8)
+        viewModelScope.launch(exceptionHandler.handler) {
+            ttsPlaybackState.collect { state ->
+                if (state is TtsPlaybackState.Ended) {
+                    handleChapterEnd()
+                }
+                // Sleep timer: end-of-chapter mode
+                if (state is TtsPlaybackState.Ended &&
+                    _sleepTimerState.value is SleepTimerState.EndOfChapter
+                ) {
+                    stopTts()
+                    _sleepTimerState.value = SleepTimerState.Inactive
+                }
+            }
+        }
+
+        // Phase 6: Observe current sentence index for progress saving (M10)
+        viewModelScope.launch(exceptionHandler.handler) {
+            ttsCurrentSentenceIndex
+                .collect { index ->
+                    if (index >= 0) {
+                        saveTtsProgress(index)
+                    }
+                }
+        }
     }
 
     private suspend fun openPublication() {
@@ -913,9 +1002,261 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    // -- Phase 6: TTS --
+
+    /** Opens the TTS control panel. */
+    fun toggleTtsPanel() {
+        _ttsPanelState.update { it.copy(isPanelOpen = !it.isPanelOpen) }
+    }
+
+    fun closeTtsPanel() {
+        _ttsPanelState.update { it.copy(isPanelOpen = false) }
+    }
+
+    /**
+     * Starts TTS playback: emits ExtractSentences command to Fragment.
+     * The Fragment evaluates JS, which calls back [onSentencesExtracted].
+     * Locks UserSettings (Council M12).
+     */
+    fun startTts() {
+        _ttsPanelState.update { it.copy(isSettingsLocked = true) }
+        _commands.tryEmit(ReaderCommand.ExtractSentences)
+    }
+
+    /** Pauses TTS playback. */
+    fun pauseTts() {
+        ttsController.pause()
+    }
+
+    /**
+     * Stops TTS playback and unlocks UserSettings.
+     * Called on: explicit user stop, book switch, end of book.
+     */
+    fun stopTts() {
+        ttsController.stop()
+        _ttsPanelState.update { it.copy(isSettingsLocked = false, currentSentence = -1) }
+        _commands.tryEmit(ReaderCommand.ClearTtsHighlight)
+        cancelSleepTimer()
+    }
+
+    fun seekTtsBackward() {
+        val current = ttsCurrentSentenceIndex.value
+        if (current > 0) {
+            ttsController.seekToSentence(current - 1)
+        }
+    }
+
+    fun seekTtsForward() {
+        val current = ttsCurrentSentenceIndex.value
+        val total = _ttsPanelState.value.totalSentences
+        if (current < total - 1) {
+            ttsController.seekToSentence(current + 1)
+        }
+    }
+
+    fun setTtsSpeed(speed: Float) {
+        _ttsPanelState.update { it.copy(speed = speed) }
+        ttsController.setSpeed(speed)
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setTtsRate(speed)
+        }
+    }
+
+    fun setTtsPitch(pitch: Float) {
+        _ttsPanelState.update { it.copy(pitch = pitch) }
+        ttsController.setPitch(pitch)
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setTtsPitch(pitch)
+        }
+    }
+
+    /**
+     * Called from Fragment (BridgeCallback) when JS sentence extraction completes.
+     * Parses JSON on Dispatchers.Default (Oracle S5), assembles Locators (Architect M10),
+     * and starts playback.
+     */
+    fun onSentencesExtracted(json: String) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            val sentences = withContext(dispatchers.default) {
+                parseSentences(json)
+            }
+            if (sentences.isEmpty()) {
+                errorChannel.tryEmit(
+                    AppError("TTS: no sentences extracted from current chapter")
+                )
+                return@launch
+            }
+
+            _ttsPanelState.update {
+                it.copy(totalSentences = sentences.size, currentSentence = -1)
+            }
+
+            currentSentences = sentences
+
+            val chapterTitle = findChapterTitle(currentChapterHref) ?: ""
+            val bookTitle = publication?.metadata?.title ?: ""
+            ttsController.play(sentences, chapterTitle, bookTitle)
+        }
+    }
+
+    /**
+     * Parses JS-extracted JSON into [TtsSentence] list with Locators (Architect M10).
+     * JS provides {id, text, href, progression}; Kotlin assembles full Locator
+     * using publication.readingOrder.
+     */
+    private fun parseSentences(json: String): List<TtsSentence> {
+        val pub = publication ?: return emptyList()
+        return try {
+            val array = JSONArray(json)
+            (0 until array.length()).map { i ->
+                val obj = array.getJSONObject(i)
+                val id = obj.getInt("id")
+                val text = obj.getString("text")
+                val href = obj.optString("href", "")
+                val progression = obj.optDouble("progression", 0.0)
+                val locator = buildLocator(pub, href, progression)
+                TtsSentence(id = id, text = text, locator = locator)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.e("ReaderViewModel", "Failed to parse sentences JSON", e)
+            emptyList()
+        }
+    }
+
+    /** Assembles a Readium Locator from href + progression (Architect guide). */
+    private fun buildLocator(pub: Publication, href: String, progression: Double): Locator? {
+        val normalizedHref = href.substringBefore('#').substringBefore('?').trimEnd('/')
+        val link = pub.readingOrder.find {
+            it.href.toString().substringBefore('#').substringBefore('?').trimEnd('/') == normalizedHref
+        } ?: pub.readingOrder.firstOrNull()
+        ?: return null
+
+        val baseLocator = pub.locatorFromLink(link) ?: return null
+        return baseLocator.copy(locations = baseLocator.locations.copy(progression = progression))
+    }
+
+    /**
+     * Handles end-of-chapter: navigate to next chapter or stop at book end (Oracle M8).
+     * Sets isTtsNavigating to distinguish from user navigation (Oracle M7).
+     */
+    private fun handleChapterEnd() {
+        val pub = publication ?: return
+        val currentHref = currentChapterHref
+        val nextLink = nextReadingOrderLink(pub, currentHref)
+
+        if (nextLink == null) {
+            // End of book
+            android.util.Log.i("ReaderViewModel", "TTS reached end of book")
+            stopTts()
+            return
+        }
+
+        // Navigate to next chapter
+        isTtsNavigating = true
+        _commands.tryEmit(ReaderCommand.ClearTtsHighlight)
+        _commands.tryEmit(ReaderCommand.NavigateToLink(nextLink))
+        // Fragment will detect href change; sentence extraction happens on new chapter load
+    }
+
+    /**
+     * Finds the next readingOrder link after [currentHref] (Oracle M8).
+     * Uses same normalization as findChapterTitle.
+     */
+    private fun nextReadingOrderLink(pub: Publication, currentHref: String): Link? {
+        if (currentHref.isBlank()) return pub.readingOrder.firstOrNull()
+        val normalized = currentHref.substringBefore('#').substringBefore('?').trimEnd('/')
+        val index = pub.readingOrder.indexOfFirst {
+            it.href.toString().substringBefore('#').substringBefore('?').trimEnd('/') == normalized
+        }
+        if (index < 0 || index >= pub.readingOrder.size - 1) return null
+        return pub.readingOrder[index + 1]
+    }
+
+    /**
+     * Called by Fragment when href changes (Oracle M7).
+     * If TTS is playing and href changed due to user navigation (not TTS-driven),
+     * stop TTS and re-extract for the new chapter.
+     */
+    fun onChapterChanged(href: String) {
+        currentChapterHref = href
+        if (isTtsNavigating) {
+            isTtsNavigating = false
+            // TTS-driven navigation: extract sentences for new chapter
+            _commands.tryEmit(ReaderCommand.ExtractSentences)
+        } else if (ttsPlaybackState.value is TtsPlaybackState.Playing ||
+            ttsPlaybackState.value is TtsPlaybackState.Paused
+        ) {
+            // User-driven navigation mid-TTS (Oracle M7): stop + re-extract
+            android.util.Log.i("ReaderViewModel", "User navigation mid-TTS — re-extracting")
+            ttsController.stop()
+            _commands.tryEmit(ReaderCommand.ClearTtsHighlight)
+            _commands.tryEmit(ReaderCommand.ExtractSentences)
+        }
+    }
+
+    /** Saves reading progress from current TTS sentence locator (M10). */
+    private fun saveTtsProgress(sentenceIndex: Int) {
+        val sentence = currentSentences.getOrNull(sentenceIndex)
+        val locator = sentence?.locator ?: return
+        val pub = publication ?: return
+
+        saveJob?.cancel()
+        saveJob = viewModelScope.launch(exceptionHandler.handler) {
+            delay(1000L)
+            val now = System.currentTimeMillis()
+            readingProgressRepository.saveProgress(
+                ReadingProgressEntity(
+                    uuid = "progress_${bookUuid}",
+                    bookUuid = bookUuid,
+                    locator = locator.toJsonString(),
+                    progress = locator.locations.totalProgression ?: 0.0,
+                    createdAt = now,
+                    updatedAt = now,
+                    isDeleted = false
+                )
+            )
+        }
+    }
+
+    // -- Phase 6: Sleep Timer (Oracle D7) --
+
+    fun startSleepTimer(durationMs: Long) {
+        cancelSleepTimer()
+        _sleepTimerState.value = SleepTimerState.Active(durationMs, durationMs)
+        sleepTimerJob = viewModelScope.launch(exceptionHandler.handler) {
+            val deadline = System.currentTimeMillis() + durationMs
+            while (System.currentTimeMillis() < deadline) {
+                val remaining = deadline - System.currentTimeMillis()
+                _sleepTimerState.value = SleepTimerState.Active(remaining, durationMs)
+                delay(1000L)
+            }
+            _sleepTimerState.value = SleepTimerState.Inactive
+            pauseTts()
+        }
+    }
+
+    fun startSleepTimerEndOfChapter() {
+        _sleepTimerState.value = SleepTimerState.EndOfChapter
+        // Fires when TtsPlaybackState.Ended is observed (handled in init block)
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        _sleepTimerState.value = SleepTimerState.Inactive
+    }
+
     override fun onCleared() {
         super.onCleared()
         searchJob?.cancel() // triggers finally → iterator.close()
+        sleepTimerJob?.cancel()
+        ttsNavigationJob?.cancel()
+        // Architect M3: disconnect only — do NOT stop playback.
+        // The service continues in background via foreground notification.
+        // stop() is called only on: explicit user stop, book switch, end of book.
+        ttsController.disconnect()
         publication?.close()
         publication = null
     }

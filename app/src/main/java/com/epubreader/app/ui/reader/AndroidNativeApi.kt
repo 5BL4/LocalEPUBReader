@@ -40,6 +40,18 @@ class AndroidNativeApi(private val callbackHolder: BridgeCallbackHolder) {
         callbackHolder.callback?.onSelectionChanged(text)
     }
 
+    /**
+     * Phase 6 (TTS): Called when JS finishes extracting sentences from the
+     * current chapter. [json] is a JSON array of {id, text, href, progression}.
+     *
+     * Security (NEVER #8): [origin] is validated against [ALLOWED_ORIGINS].
+     */
+    @JavascriptInterface
+    fun onSentencesExtracted(origin: String, json: String) {
+        if (!isAllowedOrigin(origin)) return
+        callbackHolder.callback?.onSentencesExtracted(json)
+    }
+
     companion object {
         /** Readium WebViewServer virtual hosts (verified from WebViewServer.kt). */
         val ALLOWED_ORIGINS = setOf("https://readium_package", "https://readium_assets")
@@ -52,6 +64,13 @@ class AndroidNativeApi(private val callbackHolder: BridgeCallbackHolder) {
 interface BridgeCallback {
     fun onAutoScrollStopped()
     fun onSelectionChanged(text: String)
+
+    /**
+     * Phase 6 (TTS): Called when JS sentence extraction completes.
+     * [json] is a JSON array of {id, text, href, progression}.
+     * The implementation should parse on a background thread (Oracle S5).
+     */
+    fun onSentencesExtracted(json: String)
 }
 
 /**
