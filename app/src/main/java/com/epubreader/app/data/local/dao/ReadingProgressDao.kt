@@ -32,8 +32,8 @@ interface ReadingProgressDao {
     @Query("SELECT * FROM reading_progress WHERE updatedAt > :since AND isDeleted = 0")
     suspend fun getUpdatedSince(since: Long): List<ReadingProgressEntity>
 
-    @Query("UPDATE reading_progress SET syncedAt = :ts WHERE uuid IN (:uuids)")
-    suspend fun markSynced(uuids: List<String>, ts: Long)
+    @Query("UPDATE reading_progress SET syncedAt = :syncedAt WHERE uuid IN (:uuids) AND updatedAt <= :fenceTs")
+    suspend fun markSynced(uuids: List<String>, syncedAt: Long, fenceTs: Long)
 
     @Query("SELECT * FROM reading_progress WHERE bookUuid = :bookUuid AND isDeleted = 0")
     fun observeByBook(bookUuid: String): Flow<List<ReadingProgressEntity>>

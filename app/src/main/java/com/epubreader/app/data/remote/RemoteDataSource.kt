@@ -1,9 +1,9 @@
 package com.epubreader.app.data.remote
 
 import com.epubreader.app.core.PushAck
-import com.epubreader.app.core.Syncable
 import com.epubreader.app.core.SyncCursor
 import com.epubreader.app.core.SyncPage
+import com.epubreader.app.core.sync.SyncRecord
 
 /**
  * Offline-First sync transport. Local data source is always primary; this remote
@@ -13,6 +13,6 @@ import com.epubreader.app.core.SyncPage
  * orchestrated by SyncManager in Phase 7 — NOT this transport's responsibility.
  */
 interface RemoteDataSource {
-    suspend fun pullSince(cursor: SyncCursor): SyncPage<Syncable>
-    suspend fun push(dirty: List<Syncable>): PushAck
+    suspend fun pullSince(cursor: SyncCursor): SyncPage<SyncRecord>
+    suspend fun push(dirty: List<SyncRecord>): PushAck
 }

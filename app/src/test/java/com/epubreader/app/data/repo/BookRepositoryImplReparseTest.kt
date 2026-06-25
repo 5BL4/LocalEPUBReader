@@ -27,6 +27,7 @@ class BookRepositoryImplReparseTest {
         override val default = testDispatcher
         override val main = testDispatcher
         override val mainImmediate = testDispatcher
+        override val sync = testDispatcher
     }
 
     private val sampleBook = BookEntity(

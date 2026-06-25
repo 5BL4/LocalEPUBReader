@@ -35,6 +35,7 @@ class EpubBookImporterTest {
         override val default: CoroutineDispatcher = Dispatchers.Unconfined
         override val main: CoroutineDispatcher = Dispatchers.Unconfined
         override val mainImmediate: CoroutineDispatcher = Dispatchers.Unconfined
+        override val sync: CoroutineDispatcher = Dispatchers.Unconfined
     }
 
     private fun mockContextWithFileDir(): Context {

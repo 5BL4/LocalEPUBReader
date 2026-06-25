@@ -2,6 +2,8 @@ package com.epubreader.app.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.epubreader.app.data.local.AppDatabase
 import com.epubreader.app.data.local.dao.BookDao
 import com.epubreader.app.data.local.dao.BookmarkDao
@@ -22,7 +24,14 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase =
-        Room.databaseBuilder(context, AppDatabase::class.java, "epubreader.db").build()
+        Room.databaseBuilder(context, AppDatabase::class.java, "epubreader.db")
+            .addCallback(object : RoomDatabase.Callback() {
+                override fun onOpen(db: SupportSQLiteDatabase) {
+                    // Oracle S7: enforce FK constraints (SQLite defaults to OFF)
+                    db.execSQL("PRAGMA foreign_keys = ON")
+                }
+            })
+            .build()
 
     @Provides fun provideBookDao(db: AppDatabase): BookDao = db.bookDao()
     @Provides fun provideReadingProgressDao(db: AppDatabase): ReadingProgressDao = db.readingProgressDao()

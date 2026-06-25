@@ -32,6 +32,6 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE updatedAt > :since AND isDeleted = 0")
     suspend fun getUpdatedSince(since: Long): List<BookEntity>
 
-    @Query("UPDATE books SET syncedAt = :ts WHERE uuid IN (:uuids)")
-    suspend fun markSynced(uuids: List<String>, ts: Long)
+    @Query("UPDATE books SET syncedAt = :syncedAt WHERE uuid IN (:uuids) AND updatedAt <= :fenceTs")
+    suspend fun markSynced(uuids: List<String>, syncedAt: Long, fenceTs: Long)
 }

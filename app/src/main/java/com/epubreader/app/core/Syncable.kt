@@ -13,7 +13,7 @@ interface Syncable {
 data class SyncCursor(val updatedAt: Long, val uuid: String? = null)
 
 /** One page of pulled sync items. */
-data class SyncPage<out T : Syncable>(val items: List<T>, val nextCursor: SyncCursor? = null)
+data class SyncPage<out T>(val items: List<T>, val nextCursor: SyncCursor? = null)
 
 /** Acknowledgement of a push batch: which uuids the server accepted + their server-side updatedAt. */
 data class PushAck(val ackedUuids: List<String>, val serverUpdatedAt: Map<String, Long> = emptyMap())

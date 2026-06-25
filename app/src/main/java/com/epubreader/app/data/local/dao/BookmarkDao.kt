@@ -32,8 +32,8 @@ interface BookmarkDao {
     @Query("SELECT * FROM bookmarks WHERE updatedAt > :since AND isDeleted = 0")
     suspend fun getUpdatedSince(since: Long): List<BookmarkEntity>
 
-    @Query("UPDATE bookmarks SET syncedAt = :ts WHERE uuid IN (:uuids)")
-    suspend fun markSynced(uuids: List<String>, ts: Long)
+    @Query("UPDATE bookmarks SET syncedAt = :syncedAt WHERE uuid IN (:uuids) AND updatedAt <= :fenceTs")
+    suspend fun markSynced(uuids: List<String>, syncedAt: Long, fenceTs: Long)
 
     @Query("SELECT * FROM bookmarks WHERE bookUuid = :bookUuid AND isDeleted = 0")
     fun observeByBook(bookUuid: String): Flow<List<BookmarkEntity>>

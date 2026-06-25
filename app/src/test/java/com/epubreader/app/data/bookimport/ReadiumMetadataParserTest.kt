@@ -35,6 +35,7 @@ class ReadiumMetadataParserTest {
         override val default: CoroutineDispatcher get() = kotlinx.coroutines.Dispatchers.Unconfined
         override val main: CoroutineDispatcher get() = kotlinx.coroutines.Dispatchers.Unconfined
         override val mainImmediate: CoroutineDispatcher get() = kotlinx.coroutines.Dispatchers.Unconfined
+        override val sync: CoroutineDispatcher get() = kotlinx.coroutines.Dispatchers.Unconfined
     }
 
     @BeforeEach

@@ -1,11 +1,11 @@
 # EpubReader — 技术文档 (Technical Documentation)
 
 > **项目**: 本地 EPUB 阅读器 (EpubReader)
-> **状态**: Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅ → Phase 4 ✅ → Phase 5 ✅ → Phase 6 ✅ 完成
-> **日期**: 2026-06-25
-> **下一步**: 等待用户指令后开始 Phase 7 (测试驱动 + 同步)
+> **状态**: Phase 1 ✅ → Phase 2 ✅ → Phase 3 ✅ → Phase 4 ✅ → Phase 5 ✅ → Phase 6 ✅ → Phase 7 ✅ 全部完成
+> **日期**: 2026-06-26
+> **下一步**: 全部 7 个 Phase 已完成, 项目交付
 
-本文档合并了 Phase 1 (基础架构与同步数据模型)、Phase 2 (书架 UI 与路由)、Phase 3 (Readium v3.x 引擎集成)、Phase 4 (JS Bridge 与交互系统)、Phase 5 (知识管理与导出)、Phase 6 (Media3 TTS 听书) 的全部进度文档。
+本文档合并了 Phase 1 (基础架构与同步数据模型)、Phase 2 (书架 UI 与路由)、Phase 3 (Readium v3.x 引擎集成)、Phase 4 (JS Bridge 与交互系统)、Phase 5 (知识管理与导出)、Phase 6 (Media3 TTS 听书)、Phase 7 (测试驱动 + 同步) 的全部进度文档。
 
 ---
 
@@ -936,12 +936,529 @@ com.epubreader.app
 - JS 句子提取 + CJK 分句 + DOM Range 高亮
 - 睡眠定时器 (5/10/15/30m + 本章结束)
 
-### Phase 7 (测试驱动 + 同步)
-- Repository 双数据源测试, 协程异常边界, Turbine, Compose UI E2E
-- SyncManager: LWW 合并 (对比 updatedAt, isDeleted=1 优先)
-- 可能需要领域模型映射层 (SF-2)
-- Locator JSON canonical 排序 (S10 — 同步确定性)
-- TTS 集成测试 (需 Robolectric 或设备测试 — SimpleBasePlayer Looper 依赖)
+### Phase 7 (测试驱动 + 同步) — ✅ 完成
+- SyncManager: LWW 合并 (对称时间戳, UUID 平局决胜, 时钟偏移钳制)
+- 领域模型映射层 (SF-2): SyncRecord (type + meta + payload: JsonObject)
+- Locator JSON canonical 排序 (S10): toCanonicalJsonString() 递归键排序
+- Repository 双数据源测试, 协程异常边界 (5 Repo), Turbine Flow 测试
+- SyncManager 测试: LWW, echo 防护, Mutex, 批量分页, FK 顺序, 延迟 markSynced
+- Compose UI E2E + TTS 集成测试: 延迟 (需 Robolectric/设备, Oracle S4 Option C)
+
+---
+
+# Phase 7 — 测试驱动 (TDD) + 同步
+
+> **状态**: ✅ 完成 (构建通过, 181 项测试全部通过, Oracle 计划审查 ACCEPT_WITH_CHANGES, Oracle 结果审查 ACCEPT_WITH_CHANGES, 所有 must-fix 已修复)
+
+## 7.1 关键架构决策 (Oracle + Council 审查通过)
+
+### D1: LWW 对称时间戳合并 (Oracle M1 修复)
+LWW 合并采用**对称时间戳**策略, 非"远程墓碑始终优先":
+- `local == null` → Upsert(remote) (新记录)
+- 时钟偏移钳制: `remote.updatedAt > now + 60s` → 钳制为 `now` (Council RISK-D3)
+- `remote.updatedAt > local.updatedAt` → Upsert(remote)
+- `remote.updatedAt < local.updatedAt` → Skip
+- 平局 (equal updatedAt): `remote.isDeleted` → Upsert; `local.isDeleted` → Skip; 否则 UUID 字典序决胜 (Council RISK-E2)
+
+### D2: SyncRecord 精简传输 DTO (Oracle S3 + SF-2)
+`SyncRecord(type: SyncType, meta: SyncMeta, payload: JsonObject)` — 一个映射器, 非 5 个密封子类。`Syncable` 接口仅含同步字段, 无法传输业务字段 → SyncRecord 携带 `JsonObject` payload。使用 `kotlinx.serialization.json` (非 org.json — JVM 测试兼容)。TODO Phase 8: 考虑类型化密封 SyncPayload (Council RISK-S1)。
+
+### D3: SyncEntityHandler 模式 (Council RISK-MG2)
+消除 5× 重复: `SyncEntityHandler` 接口 + `BaseSyncEntityHandler<T>` 抽象类 + 5 个具体 handler。每个 handler 封装 DAO 操作 + 映射 + FK 顺序 (Book=0, Progress/Bookmark/Highlight=1, Note=2)。
+
+### D4: SyncManager 并发安全 (Council RISK-C2/L2)
+- `Mutex.withLock` 防并发 sync 调用
+- `CoroutineScope(SupervisorJob() + dispatchers.sync)` ApplicationScope — sync 在 Activity 销毁后继续
+- `launchSync()`: mutex 已锁定时返回 null (跳过, S8)
+
+### D5: Fenced + Deferred markSynced (Council RISK-C1/ER1)
+- **Fenced**: `WHERE updatedAt <= :fenceTs` — sync 期间编辑的记录不被标记, 留给下次 sync
+- **Deferred**: 所有 markSynced 调用收集到 `pendingMarks`, 仅在全部 handler 成功后执行。任一失败 → 不标记 → 干净重试
+- **MF1 修复**: deferred markSynced 循环包裹 try-catch (CancellationException re-throw), 防止 DB 失败导致 SyncState 卡在 Syncing
+
+### D6: 批量分页 (Council RISK-M1)
+Push 阶段: `dirty.chunked(BATCH_SIZE=200)` 分批推送, 防 OOM。Pull 阶段: `do-while` on `nextCursor` 分页拉取。
+
+### D7: SyncTrigger 生命周期触发 (Oracle M4 + Council RISK-L1)
+`DefaultLifecycleObserver` 注册在 `MainActivity.onCreate()` (非 Application — Hilt 就绪)。`onStart` 触发 `syncManager.launchSync()`, 30 秒防抖。
+
+### D8: FK 约束启用 (Oracle S7)
+`DatabaseModule` 添加 `RoomDatabase.Callback.onOpen` → `PRAGMA foreign_keys = ON` (Room/AGP 版本无 `setForeignKeyConstraintsEnabled`, 用 callback 替代)。
+
+### D9: SyncCursorStore 接口 + Noop (Council RISK-MG1)
+接口设计就绪, Phase 7 用 `NoopSyncCursorStore` (无持久化 — NoopRemoteDataSource 返回 null cursor)。Phase 8 真实后端时实现 DataStore 版本。
+
+### D10: SyncState 结构化错误 (Oracle S7)
+`SyncState.Error(result: SyncResult)` 携带结构化 `errors: List<SyncError>`, 非折叠字符串。UI 可区分按类型失败。
+
+## 7.2 已完成的交付物
+
+### Phase 7 新增文件 — core/sync/ (纯 Kotlin, 5 个)
+| 文件 | 说明 |
+|------|------|
+| `LwwMerge.kt` | LWW 合并纯函数 + `MergeDecision` 密封接口 (Upsert/Skip) + `SKEW_TOLERANCE_MS=60000` |
+| `SyncRecord.kt` | `SyncType` 枚举 (5 值) + `@Serializable SyncMeta` + `@Serializable SyncRecord(type, meta, payload: JsonObject)` |
+| `SyncResult.kt` | `SyncResult(pulled, pushed, conflicts, errors)` + `SyncError(type, cause)` + `SyncConflict` |
+| `SyncState.kt` | 密封接口: Idle/Syncing/Success(result)/Error(result) |
+| `SyncCursorStore.kt` | 接口 + `NoopSyncCursorStore` (无持久化) |
+
+### Phase 7 新增文件 — data/sync/ (16 个)
+| 文件 | 说明 |
+|------|------|
+| `SyncableDaoOps.kt` | 统一 DAO 操作接口: getById/upsert/getDirty/markSynced(fenced) |
+| `BookDaoSyncAdapter.kt` | BookDao → SyncableDaoOps 适配器 |
+| `ReadingProgressDaoSyncAdapter.kt` | 同上 |
+| `BookmarkDaoSyncAdapter.kt` | 同上 |
+| `HighlightDaoSyncAdapter.kt` | 同上 |
+| `NoteDaoSyncAdapter.kt` | 同上 |
+| `SyncRecordMapper.kt` | @Singleton。Entity↔SyncRecord 双向映射 (5 类型)。`from*Record` 设置 syncedAt=remote.updatedAt (M2)。kotlinx.serialization.json |
+| `SyncEntityHandler.kt` | 接口: type/order/getDirty/toRecord/pullMerge/markSynced |
+| `BaseSyncEntityHandler.kt` | 抽象类: pullMerge 调用 lwwMerge, Upsert 时 upsert。`protected val mapper` |
+| `BookSyncHandler.kt` | order=0, BOOK |
+| `ReadingProgressSyncHandler.kt` | order=1, READING_PROGRESS |
+| `BookmarkSyncHandler.kt` | order=1, BOOKMARK |
+| `HighlightSyncHandler.kt` | order=1, HIGHLIGHT |
+| `NoteSyncHandler.kt` | order=2, NOTE (FK→Highlight) |
+| `SyncManager.kt` | @Singleton。Mutex + ApplicationScope + 批量分页 + 延迟 fenced markSynced + SyncState StateFlow + launchSync() |
+| `SyncTrigger.kt` | @Singleton DefaultLifecycleObserver。onStart → launchSync(), 30s 防抖 |
+
+### Phase 7 新增文件 — di/ (1 个)
+| 文件 | 说明 |
+|------|------|
+| `SyncModule.kt` | @Provides: 5 DaoSyncAdapter + SyncRecordMapper + List<SyncEntityHandler> (FK 顺序) + SyncCursorStore(Noop) |
+
+### Phase 7 修改文件 (10)
+| 文件 | 变更 |
+|------|------|
+| `core/readium/LocatorMapper.kt` | +`toCanonicalJsonString()` 递归键排序 (手动 JSON 构建, 非 org.json) + 3 helper |
+| `core/DispatchersProvider.kt` | +`sync: CoroutineDispatcher` (Dispatchers.IO.limitedParallelism(2)) |
+| `data/remote/RemoteDataSource.kt` | 重构: `SyncPage<Syncable>` → `SyncPage<SyncRecord>` |
+| `data/remote/NoopRemoteDataSource.kt` | 更新: 返回空 SyncPage<SyncRecord>, push acks with meta.uuid |
+| `data/local/dao/BookDao.kt` | markSynced: +fenceTs 参数, `WHERE updatedAt <= :fenceTs` |
+| `data/local/dao/ReadingProgressDao.kt` | 同上 |
+| `data/local/dao/BookmarkDao.kt` | 同上 |
+| `data/local/dao/HighlightDao.kt` | 同上 |
+| `data/local/dao/NoteDao.kt` | 同上 |
+| `di/DatabaseModule.kt` | +RoomDatabase.Callback `PRAGMA foreign_keys = ON` (Oracle S7) |
+| `MainActivity.kt` | +@Inject SyncTrigger + lifecycle.addObserver(syncTrigger) |
+
+### Phase 7 测试 (65 项新增, 181 项总计)
+| 测试文件 | 测试数 | 验证点 |
+|----------|--------|--------|
+| `LwwMergeTest` | 18 | LWW 全规则: 新记录/远程新/本地新/删除优先/平局 UUID 决胜/时钟偏移钳制 |
+| `SyncRecordTest` | 5 | SyncType 枚举顺序, SyncMeta 默认值, 序列化往返 |
+| `SyncCursorStoreTest` | 3 | Noop 行为: getCursor 返回 null, saveCursor 无操作 |
+| `CanonicalLocatorTest` | 5 | 键排序, 递归排序, 往返稳定性 |
+| `RepositoryExceptionBoundaryTest` | 8 | 5 Repo 异常→Result.Error, CancellationException re-throw, ErrorChannel |
+| `RepositoryFlowTest` | 10 | 5 Repo observe 方法 Turbine 测试, Flow 取消, ErrorChannel |
+| `SyncRecordMapperTest` | 6 | Book/Highlight/Note 往返, syncedAt=M2, 类型不匹配异常, nullable 字段 |
+| `SyncManagerTest` | 16 | pull/push, echo 防护, Mutex, 批量分页, FK 顺序, SyncState, 延迟 markSynced, MF1 markSynced 异常, CancellationException |
+
+## 7.3 Oracle + Council 审查结论
+
+### Oracle 计划审查 (ora-1): ACCEPT_WITH_CHANGES
+- 4 个必修项 (M1-M4): 对称 LWW, syncedAt 防回声, TDD 测试先行, sync 触发器
+- 10 个建议项 (S1-S10): 延迟 SyncableDao, 延迟 cursor 持久化, 精简 SyncRecord, 跳过 Robolectric, LWW 纯函数, 部分同步语义, FK 约束, SyncResult 定义, 无 Hilt 多绑定, canonical JSON 独立函数
+- 全部在实现前修复
+
+### Council 风险分析 (cou-1): 17 个风险场景
+- **Top 5 需在 Phase 7 解决**: RISK-C1 (sync-编辑竞态), RISK-L2 (后台取消), RISK-M1 (批量 OOM), RISK-ER1 (非原子失败), RISK-MG1 (cursor 延迟迁移成本)
+- 架构优化: fenced markSynced, Mutex, ApplicationScope, @Transaction, 批量分页, SyncCursorStore 接口, SyncEntityHandler, UUID 平局决胜, 专用 sync dispatcher
+- 全部在实现中采纳
+
+### Oracle 结果审查 (ora-2): ACCEPT_WITH_CHANGES — 所有 must-fix 已修复
+- **MF1 (致命)**: deferred markSynced 异常导致 SyncState 卡在 Syncing + 错误静默吞噬 → 包裹 try-catch + 回归测试 ✅
+- **S3**: 移除 5 个 DaoSyncAdapter 冗余 @Inject (保留 @Provides) ✅
+- **S7**: SyncState.Error 携带结构化 SyncResult (非折叠字符串) ✅
+- **S8**: launchSync() mutex 已锁定时返回 null (跳过重复) ✅
+- **S1 (canonical JSON 死代码)**: 保留 — harness 明确要求 S10 交付物, 标注为 Phase 8 基础设施
+
+## 7.4 关键流程
+
+### Sync 流程:
+1. SyncTrigger.onStart (30s 防抖) → syncManager.launchSync() (ApplicationScope)
+2. Mutex.withLock → Result.runCatchingAsync → SyncState.Syncing
+3. 按 FK 顺序 (Book→Progress/Bookmark/Highlight→Note) 遍历 handler:
+   a. **Pull**: remoteDataSource.pullSince(cursor) → 逐条 pullMerge (lwwMerge → Upsert/Skip)
+   b. **Push**: handler.getDirty() → chunked(200) → remoteDataSource.push → 收集 pendingMarks
+4. **Deferred markSynced** (仅无错误时): 逐条 markSynced(uuids, syncedAt, fenceTs=nowMs)
+5. SyncState.Success(result) 或 SyncState.Error(result)
+
+### LWW 合并规则:
+```
+merge(remote, local, nowMs):
+  if local == null → Upsert(remote)
+  clamp remote.updatedAt if > now + 60s
+  if remote.updatedAt > local.updatedAt → Upsert(remote)
+  if remote.updatedAt < local.updatedAt → Skip
+  tie: remote.isDeleted → Upsert; local.isDeleted → Skip; else UUID 字典序决胜
+```
+
+### Echo 防护 (Oracle M2):
+- 拉取的记录 `fromRecord` 设置 `syncedAt = remote.updatedAt`
+- `getDirty()` 查询 `WHERE syncedAt IS NULL OR syncedAt < updatedAt` → 已同步记录不再 dirty
+- 防止 push 回声循环
+
+### Fenced markSynced (Council RISK-C1):
+- `markSynced(uuids, syncedAt, fenceTs=sync开始时间)`
+- SQL: `WHERE updatedAt <= :fenceTs` — sync 期间编辑的记录 (updatedAt > fenceTs) 不被标记
+- 留给下次 sync, 防止数据丢失
+
+---
+
+# 锁定的依赖版本 (后续 Phase 共用)
+
+| 依赖 | 版本 | 备注 |
+|------|------|------|
+| AGP | 9.2.1 | Gradle 9.4.1, JDK 21 |
+| Kotlin | 2.3.20 | 与 Readium 3.3.0 编译时版本匹配; KSP 2.3.9 可用 |
+| KSP | 2.3.9 | 独立于 Kotlin 版本 (KSP2) |
+| Compose BOM | 2026.06.00 | 编译器通过 `org.jetbrains.kotlin.plugin.compose` |
+| Hilt | 2.59.2 | KSP (非 kapt); hilt-navigation-compose 1.3.0 |
+| Room | 2.8.4 | KSP, exportSchema=true, generateKotlin=true |
+| Navigation Compose | 2.9.8 | 类型安全路由 + kotlinx.serialization |
+| kotlinx-serialization-json | 1.11.0 | 插件随 Kotlin 捆绑; Phase 7 SyncRecord |
+| Media3 | 1.10.1 | Phase 6 用 |
+| DataStore Preferences | 1.2.1 | 仅 Preferences (Proto 延迟) |
+| Readium v3 | 3.3.0 | shared/streamer/navigator — Phase 3 集成 |
+| Coil | 2.7.0 | Phase 2 封面加载 |
+| flexmark | 0.64.8 | Phase 5 HTML→MD |
+| activity-compose | 1.13.0 | enableEdgeToEdge |
+| core-ktx | 1.19.0 | |
+| desugar_jdk_libs | 2.1.5 | Readium 需要核心库脱糖 |
+| kotlinx-collections-immutable | 0.3.7 | PersistentList for @Immutable UiState |
+| compose-ui-viewbinding | BOM 管理 | Phase 3 AndroidViewBinding |
+| JUnit 5 BOM | 5.14.4 | + junit-platform-launcher |
+| MockK | 1.14.11 | |
+| Turbine | 1.2.1 | Phase 7 Flow 测试 |
+
+**关键约束**: 不要升级到 Kotlin 2.4.0 (无 KSP 2.4.x, 与 Readium 未验证)。不要使用 alpha/RC 版本。
+
+---
+
+# 包结构 (Clean Architecture)
+
+```
+com.epubreader.app
+├── EpubReaderApplication.kt          (@HiltAndroidApp)
+├── MainActivity.kt                   (@AndroidEntryPoint, enableEdgeToEdge, +SyncTrigger Phase 7)
+├── core/                             核心工具与契约
+│   ├── Result.kt                     函数式结果类型 (+ CancellationException re-throw, getOrThrow)
+│   ├── Syncable.kt                   同步契约 + 游标/页/确认
+│   ├── DispatchersProvider.kt        可注入 Dispatcher (+sync Phase 7)
+│   ├── ErrorChannel.kt               全局错误通道
+│   ├── AppCoroutineExceptionHandler.kt  协程异常兜底
+│   ├── StringProvider.kt             本地化字符串接口 (Phase 2 M5)
+│   ├── readium/
+│   │   └── LocatorMapper.kt          Locator↔String 转换 + toCanonicalJsonString (Phase 3 D2, Phase 7 S10)
+│   ├── sync/                         [Phase 7] 同步核心契约 (纯 Kotlin)
+│   │   ├── LwwMerge.kt               LWW 合并纯函数 + MergeDecision + SKEW_TOLERANCE_MS
+│   │   ├── SyncRecord.kt             SyncType 枚举 + SyncMeta + SyncRecord DTO
+│   │   ├── SyncResult.kt             SyncResult + SyncError + SyncConflict
+│   │   ├── SyncState.kt              密封接口: Idle/Syncing/Success/Error
+│   │   └── SyncCursorStore.kt        接口 + NoopSyncCursorStore
+│   ├── tts/                          [Phase 6] TTS 核心契约 (纯 Kotlin)
+│   │   ├── TtsEngineState.kt         密封接口: Uninitialized/Initializing/Ready/LanguageMissing/Error
+│   │   ├── TtsPlaybackState.kt       密封接口: Idle/Playing/Paused/Ended
+│   │   ├── TtsSentence.kt            数据类: id, text, locator (M10)
+│   │   ├── TtsBus.kt                 @Singleton 共享状态 (sentences/engineState/currentSentenceIndex/generationId)
+│   │   ├── TtsController.kt          接口: StateFlows + connect/play/pause/stop/seek/disconnect
+│   │   └── TtsEngine.kt              接口: state + initialize/speak/stop/shutdown + Callbacks + 常量
+│   ├── export/                       [Phase 5] Markdown 导出
+│   │   ├── MarkdownExporter.kt       接口 + 纯导出数据类 (不依赖 Room 实体)
+│   │   └── MarkdownExporterImpl.kt   flexmark HTML→MD 实现 + 章节分组
+│   └── README.md                     约定文档
+├── data/
+│   ├── local/                        Room 数据层
+│   │   ├── AppDatabase.kt            (version=1, exportSchema=true)
+│   │   ├── entity/                   5 个实体 (locator: String)
+│   │   ├── dao/                      5 个 DAO (+fenced markSynced Phase 7)
+│   │   └── converter/Converters.kt   List<String>↔JSON
+│   ├── remote/                       远程数据源 (传输层)
+│   │   ├── RemoteDataSource.kt       接口 (SyncPage<SyncRecord> Phase 7)
+│   │   └── NoopRemoteDataSource.kt   空实现
+│   ├── sync/                         [Phase 7] 同步实现层
+│   │   ├── SyncableDaoOps.kt         统一 DAO 操作接口
+│   │   ├── BookDaoSyncAdapter.kt     5 个 DAO 适配器
+│   │   ├── ReadingProgressDaoSyncAdapter.kt
+│   │   ├── BookmarkDaoSyncAdapter.kt
+│   │   ├── HighlightDaoSyncAdapter.kt
+│   │   ├── NoteDaoSyncAdapter.kt
+│   │   ├── SyncRecordMapper.kt       Entity↔SyncRecord 双向映射 (5 类型)
+│   │   ├── SyncEntityHandler.kt      接口: type/order/getDirty/toRecord/pullMerge/markSynced
+│   │   ├── BaseSyncEntityHandler.kt  抽象类: pullMerge 调用 lwwMerge
+│   │   ├── BookSyncHandler.kt        5 个具体 handler (FK order)
+│   │   ├── ReadingProgressSyncHandler.kt
+│   │   ├── BookmarkSyncHandler.kt
+│   │   ├── HighlightSyncHandler.kt
+│   │   ├── NoteSyncHandler.kt
+│   │   ├── SyncManager.kt            @Singleton (Mutex+ApplicationScope+批量+延迟fenced markSynced)
+│   │   └── SyncTrigger.kt            DefaultLifecycleObserver (onStart→launchSync, 30s防抖)
+│   ├── prefs/                        DataStore 强类型封装
+│   ├── repo/                         仓库实现 (+ reparseMetadata Phase 3)
+│   └── bookimport/                   导入管线
+│       ├── BookMetadata.kt
+│       ├── MetadataParser.kt         (接口)
+│       ├── FilenameMetadataParser.kt (桩实现, Phase 3 不再绑定)
+│       ├── ReadiumMetadataParser.kt  [Phase 3] Readium Streamer 实现
+│       ├── InsufficientStorageException.kt
+│       ├── BookImporter.kt           (接口)
+│       └── EpubBookImporter.kt       (NIO + 存储校验 + 脏数据清理)
+├── domain/
+│   └── repository/                   仓库接口 (+ reparseMetadata Phase 3)
+├── di/                               Hilt 模块
+│   ├── DatabaseModule.kt             (+FK约束 Phase 7)
+│   ├── DataStoreModule.kt
+│   ├── AppBindingsModule.kt          (9 个 @Binds)
+│   ├── ImportModule.kt               (BookImporter + MetadataParser→ReadiumMetadataParser)
+│   ├── ReadiumModule.kt              [Phase 3] DefaultHttpClient/AssetRetriever/PublicationOpener
+│   └── SyncModule.kt                 [Phase 7] 5 Adapter + Mapper + Handlers + CursorStore
+├── media/                            [Phase 6] Media3 TTS 实现
+│   ├── AndroidTtsEngine.kt           TtsEngine 实现 (状态机+看门狗+线程安全+分块)
+│   ├── TtsPlayer.kt                  SimpleBasePlayer (章节级 MediaItem+单路径+音频焦点)
+│   ├── TtsPlaybackService.kt         MediaSessionService (Channel+Hilt+自停)
+│   ├── TtsControllerImpl.kt          TtsController 实现 (MediaController+排队契约)
+│   └── TtsModule.kt                  Hilt @Binds TtsController→TtsControllerImpl
+├── navigation/                       路由定义
+│   ├── Routes.kt                     (BookshelfRoute, ReaderRoute)
+│   └── EpubReaderNavHost.kt          (ReaderScreen 替换占位)
+└── ui/                               Compose 界面
+    ├── EpubReaderApp.kt              (根 Composable)
+    ├── theme/
+    │   ├── Color.kt
+    │   ├── Type.kt
+    │   └── Theme.kt
+    ├── bookshelf/
+    │   ├── BookshelfUiState.kt       (@Immutable + PersistentList)
+    │   ├── ImportState.kt            (密封接口)
+    │   ├── BookshelfViewModel.kt     (+ reparseMetadata Phase 3)
+    │   ├── BookshelfScreen.kt        (LazyVerticalGrid + SAF + 进度隔离 + 上下文菜单)
+    │   └── components/
+    │       └── BookCard.kt           (Coil + 占位符)
+    └── reader/                       [Phase 3/4/5/6]
+        ├── ReaderUiState.kt          (@Immutable, +toc/isTocDrawerOpen/isSearchPanelOpen/isAutoScrollActive Phase 4, +isKnowledgePanelOpen Phase 5)
+        ├── ReaderViewModel.kt        (@HiltViewModel, toRoute, 进度记忆, onCleared close, +搜索/选词/书签/自动滚动 Phase 4, +笔记/知识面板/导出 Phase 5)
+        ├── ReaderHostFragment.kt     (@AndroidEntryPoint, EpubNavigatorFragment.Listener, +JS Bridge/命令/自动滚动 Phase 4)
+        ├── ReaderScreen.kt           (AndroidViewBinding + Edge-to-Edge 沉浸式, +TOC抽屉/搜索/选词工具栏 Phase 4, +知识面板/笔记编辑器/SAF导出 Phase 5)
+        ├── PreferencesMapper.kt      (AppPreferences→EpubPreferences)
+        ├── AndroidNativeApi.kt       [Phase 4] @Keep JS Bridge + origin 校验 + BridgeCallbackHolder
+        ├── ReaderJsScripts.kt        [Phase 4] 自动滚动/选词 JS 脚本 (touchstart→cancelAnimationFrame)
+        ├── ReaderCommand.kt          [Phase 4] Fragment 命令密封接口
+        ├── TocDrawer.kt              [Phase 4] TOC 侧滑抽屉 + TocItem
+        ├── SearchPanel.kt            [Phase 4] 搜索面板 + SearchState/SearchResult
+        ├── SelectionToolbar.kt       [Phase 4/5] 选词工具栏 + SelectionState (+Note 按钮 Phase 5)
+        ├── KnowledgeUiState.kt       [Phase 5] KnowledgeItem/KnowledgeState + ExportState + NoteEditorState
+        ├── KnowledgePanel.kt         [Phase 5] 知识面板 ModalBottomSheet (高亮/笔记/书签列表 + 导出按钮)
+        ├── NoteEditorDialog.kt       [Phase 5] 笔记编辑器 AlertDialog
+        ├── TtsUiState.kt             [Phase 6] TtsPanelState + SleepTimerState
+        ├── TtsControlPanel.kt        [Phase 6] TTS 控制 ModalBottomSheet (播放/速度/音调/睡眠定时器)
+        ├── LanguagePackDialog.kt     [Phase 6] 语言包缺失/错误对话框
+        └── TtsJsScripts.kt           [Phase 6] 句子提取+高亮 JS (CJK 分句, DOM Range, Locator 特征值)
+    ```
+
+---
+
+# 关键架构约定 (后续 Phase 必须遵守)
+
+## 数据模型约定
+- **主键**: 所有用户数据表使用 `uuid: String` (NEVER #17 — 禁止自增 Int)
+- **软删除**: `UPDATE ... SET isDeleted = 1, updatedAt = :now` (NEVER #7 — 禁止物理 DELETE)
+- **查询过滤**: 所有活跃查询加 `WHERE isDeleted = 0`
+- **同步字段**: 每个实体包含 `uuid`, `isDeleted`, `createdAt`, `updatedAt`, `syncedAt`, `userId`
+- **外键**: `onDelete = NO_ACTION` (软删除级联在仓库逻辑中处理, 非 DB 层) + FK 约束已启用 (Phase 7 Oracle S7)
+- **Locator**: 存储为原始 `String` (JSON); 通过 `LocatorMapper` 在 reader 层转换 (Phase 3 D2 — 非 Room @TypeConverter, 保持数据层解耦)
+
+## 仓库层约定
+- **接口在 `domain.repository`**, **实现在 `data.repo`** — ViewModel 注入接口, 不注入 DAO (NEVER #2)
+- **一次性操作**: `withContext(dispatchers.io) { Result.runCatchingAsync { dao.xxx() } }` — 异常转为 `Result.Error` (NEVER #26)
+- **观察操作**: 直接返回 DAO 的 `Flow` (Room 处理 Flow 错误)
+- **Result vs UiState**: `Result<T>` 是仓库返回类型; `UiState` 是表现层状态 — 仓库不返回 UiState
+
+## DataStore 约定
+- **强类型封装**: 业务逻辑通过 `PreferencesRepository` 接口访问 (NEVER #29)
+- **Key 集中管理**: `PreferenceKeys` 是 `internal object`
+- **阅读进度不在 DataStore**: 在 Room `ReadingProgressEntity` 中 (支持多端同步)
+
+## 协程异常约定
+- **局部 try-catch 是主防线**: 仓库层 `Result.runCatchingAsync` 包裹所有高风险操作
+- **`AppCoroutineExceptionHandler` 是兜底**: 通过 `viewModelScope.launch(handler)` 使用
+- **CancellationException 必须 re-throw**: `Result.runCatchingAsync` 在 catch Throwable 前 catch CancellationException 并 re-throw (Phase 2 M1)
+
+## Readium v3 桥接约定 (Phase 3-4)
+- **HttpServer 已移除**: v3.3.0 使用内部 WebViewServer, 无需本地 HTTP 服务器 (D1 偏离 harness)
+- **Try<T> 用 `fold`/`getOrElse`/`onFailure` 处理**, **禁止 try-catch 包裹** (NEVER #14)
+- **Publication.close() 在 `ReaderViewModel.onCleared()`** (D3 — Compose+VM 等价于 Fragment.onDestroy)
+- **Locator 通过 LocatorMapper 转换**, 不在数据层引入 Readium 类型 (D2)
+- **Fragment 嵌入用 AndroidViewBinding + XML android:name** (D4 — NEVER #6)
+- **高频状态 (currentLocator) 隔离到独立 StateFlow** (M2 — NEVER #12)
+- **JS Bridge 工厂模式注册** (Phase 4 D1): `registerJavascriptInterface(name) { link -> ... }`, 仅 HTML 资源
+- **JS Bridge origin 校验** (Phase 4 D1/NEVER #8): `window.location.origin` against `{"https://readium_package", "https://readium_assets"}`
+- **JS Bridge 清理在 onDestroyView** (Phase 4 D2/NEVER #20): `bridgeCallbackHolder.callback = null`
+- **自动滚动状态驱动** (Phase 4 D5): `uiState.isAutoScrollActive` StateFlow, 非 command
+- **高亮装饰 StateFlow** (Phase 4 D6): `highlightDecorations` 直接收集, 非 command (避免 replay=0 丢失)
+- **JS 脚本资源切换重注入** (Phase 4 D7): 观察 `currentLocator.href` 变化重注入
+- **SearchService @ExperimentalReadiumApi** (Phase 4 D4): `@OptIn(ExperimentalReadiumApi, Search)`
+
+## 知识管理与导出约定 (Phase 5)
+- **core/export 不依赖 Room 实体** (Phase 5 D1/Oracle M1): 使用纯数据类 (ExportHighlight/ExportNote/ExportBookmark/ExportTocItem/ExportRequest), VM 映射实体→纯模型
+- **HTML→MD 用 flexmark-java** (Phase 5 D2): `FlexmarkHtmlConverter` (lazy + @Synchronized), 禁正则 (harness §7)
+- **章节分组 + 片段归一化** (Phase 5 D3/Oracle M2): `ExportTocItem.href` + `substringBefore('#')` 匹配
+- **导出流程分离** (Phase 5 D4): VM 生成 MD 字符串 (无 Context/Uri), UI 处理 SAF/ShareSheet (NEVER #2)
+- **SAF 写入 try-catch** (Phase 5 D4/Oracle M3): CancellationException re-throw (NEVER #26 精神)
+- **笔记编辑器 UI StateFlow** (Phase 5 D5/Oracle M4): `noteEditorState` StateFlow, 非 Fragment `commands` SharedFlow
+- **笔记创建顺序依赖** (Phase 5 D5/Oracle S2): 先 HighlightEntity 后 NoteEntity(highlightUuid), 高亮失败不创建笔记
+- **一次性查询导出** (Phase 5 D6): `getByBook` suspend 查询, 非 StateFlow.value (保证新鲜数据)
+- **面板互斥** (Phase 5 D5/Oracle S3): 开启 KnowledgePanel 关闭 SearchPanel, 反之亦然
+
+## Media3 TTS 约定 (Phase 6)
+- **SimpleBasePlayer 章节级 MediaItem** (Phase 6 D1/Council M9): 1 MediaItem = 1 章节, 句子进度通过 TtsBus 内部追踪 (避免通知栏重建风暴)
+- **TtsBus 单路径数据源** (Phase 6 D4/Oracle M1): TtsPlayer 读取 TtsBus.sentences.value on demand, 不收集 StateFlow (避免双路径竞态)
+- **句子高亮状态驱动** (Phase 6 D6/Oracle M2): currentSentenceIndex 是 StateFlow, 非 ReaderCommands (避免淹没 SharedFlow 缓冲区)
+- **TtsSentence 含 Locator** (Phase 6 D6/Council M10): 支持分页模式翻页 + 进度保存; JS 传特征值, Kotlin 用 locatorFromLink 组装
+- **TTS 引擎状态机** (Phase 6 D3/NEVER #28): speak() 仅在 Ready 执行; 2 秒看门狗 (M13); UtteranceProgressListener 回调切 Dispatchers.Main.immediate (M11)
+- **后台播放生命周期** (Phase 6 D8/架构师 M3): onCleared() 仅 disconnect() 不 stop() — 服务通过前台通知继续; stop() 仅在显式停止/切书/书末
+- **generationId 防竞态** (Phase 6 D4/Council M14): 每次 JS 提取生成 UUID, 高亮命令校验 generationId 防跨章节崩溃
+- **UserSettings 锁定** (Phase 6 D6/Council M12): TTS 期间锁定排版设置 (防 DOM Range 失效), UI alpha 0.5 + Toast
+- **Notification Channel 顺序** (Phase 6 D2/Oracle M5): super.onCreate() (Hilt 注入) → createChannel → MediaSession
+- **playbackState 单一真相源** (Phase 6 D4/Oracle S1): 从 Player.Listener 派生, 不存 TtsBus (避免双源竞态)
+- **未连接排队契约** (Phase 6 D5/Oracle S8): play() 排队, 连接后重放; 其他命令丢弃+日志
+- **文件名净化** (Phase 5 D4/Oracle S5): `replace(Regex("[\\\\/:*?\"<>|]"), "_").take(60)`
+- **blockquote 逐行前缀** (Phase 5 D2/Oracle S7): 多行高亮文本每行加 `> ` 前缀
+
+## 同步约定 (Phase 7)
+- **LWW 对称时间戳** (Phase 7 D1/Oracle M1): 时间戳比较, 非远程墓碑始终优先; 平局 UUID 字典序决胜
+- **拉取记录设置 syncedAt** (Phase 7 D2/Oracle M2): `fromRecord` 设置 `syncedAt = remote.updatedAt`, 防 push 回声循环
+- **SyncRecord 精简 DTO** (Phase 7 D2/Oracle S3): `type + meta + payload: JsonObject`, 一个映射器
+- **SyncEntityHandler 模式** (Phase 7 D3/Council RISK-MG2): 消除 5× 重复, handler 封装 DAO+映射+FK顺序
+- **Mutex 防并发** (Phase 7 D4/Council RISK-C2): `Mutex.withLock` 包裹 sync body
+- **ApplicationScope** (Phase 7 D4/Council RISK-L2): `CoroutineScope(SupervisorJob() + dispatchers.sync)` 存活 Activity 销毁
+- **Fenced markSynced** (Phase 7 D5/Council RISK-C1): `WHERE updatedAt <= :fenceTs`, sync 期间编辑不被标记
+- **Deferred markSynced** (Phase 7 D5/Council RISK-ER1): 全部成功后才标记, 任一失败→不标记→干净重试
+- **MF1: deferred markSynced try-catch** (Phase 7 Oracle MF1): DB 失败不卡 SyncState, 异常→errors+ErrorChannel
+- **批量分页** (Phase 7 D6/Council RISK-M1): `chunked(200)` 防 OOM
+- **SyncTrigger 在 MainActivity** (Phase 7 D7/Council RISK-L1): 非 Application (Hilt 就绪), 30s 防抖
+- **FK 约束启用** (Phase 7 D8/Oracle S7): `PRAGMA foreign_keys = ON` via RoomDatabase.Callback
+- **SyncCursorStore 接口** (Phase 7 D9/Council RISK-MG1): Noop 实现, Phase 8 DataStore 版本
+- **SyncState 结构化错误** (Phase 7 D10/Oracle S7): `Error(result: SyncResult)` 携带 errors 列表
+- **launchSync 跳过重复** (Phase 7 Oracle S8): mutex 已锁定时返回 null
+- **Locator canonical JSON** (Phase 7 S10): `toCanonicalJsonString()` 递归键排序, sync 确定性 (Phase 8 基础设施)
+- **专用 sync dispatcher** (Phase 7 Council RISK-M2): `Dispatchers.IO.limitedParallelism(2)`, 隔离 sync I/O
+
+---
+
+# NEVER 规则合规性 (Phase 1-7)
+
+| # | 规则 | 合规 | 验证方式 |
+|---|------|------|----------|
+| 2 | VM 注入接口非 DAO | ✅ | SyncManager 注入 List<SyncEntityHandler> (接口), handler 注入 SyncableDaoOps (接口), 非 DAO |
+| 5 | 禁 file:// | ✅ | v3.x WebViewServer 拦截, 无 file:// (D1) |
+| 6 | 禁 AndroidView 中 new Fragment | ✅ | AndroidViewBinding + XML android:name (M5 修复) |
+| 7 | 禁物理 DELETE | ✅ | markSynced 是 UPDATE SET syncedAt; softDelete 是 UPDATE SET isDeleted=1; 无 DELETE FROM |
+| 8 | JS Bridge origin 校验 | ✅ | AndroidNativeApi.isAllowedOrigin + 工厂资源级作用域 (Phase 4 D1) |
+| 9 | 自动滚动 touchstart→cancelAnimationFrame | ✅ | ReaderJsScripts.AUTO_SCROLL_START (Phase 4) |
+| 12 | 高频状态 derivedStateOf/隔离 | ✅ | currentLocator/searchState/selectionState/highlightDecorations 独立 StateFlow; SyncState 独立 StateFlow (Phase 7) |
+| 14 | Try 函数式处理 | ✅ | getOrElse/fold, 无 try-catch 包裹 Try; SearchIterator.next().getOrElse (Phase 4) |
+| 15 | SAF 用 rememberLauncherForActivityResult | ✅ | OpenDocument() (Phase 2); CreateDocument("text/markdown") (Phase 5) |
+| 17 | uuid String 主键 | ✅ | 所有实体 uuid: String; SyncRecord.meta.uuid |
+| 18 | 类型安全路由 | ✅ | @Serializable + composable<Route> |
+| 20 | WebView/JS Bridge 在 onDestroyView | ✅ | bridgeCallbackHolder.callback = null in onDestroyView (Phase 4) |
+| 21 | collectAsStateWithLifecycle | ✅ | 全部使用 (含 Phase 4/5 新增; SyncState StateFlow 供 UI 收集) |
+| 22 | toRoute<T>() 提取参数 | ✅ | ReaderViewModel savedStateHandle.toRoute<ReaderRoute>() |
+| 23 | @Keep on @JavascriptInterface | ✅ | AndroidNativeApi @Keep + ProGuard 规则 (Phase 4) |
+| 24 | NIO + yield() 大文件拷贝 | ✅ | EpubBookImporter |
+| 26 | try-catch / CoroutineExceptionHandler | ✅ | runCatchingAsync + launch(handler) + 命令处理 try-catch + CancellationException re-throw (Phase 4 MF1); SyncManager per-handler catch + deferred markSynced catch (Phase 7 MF1) |
+| 27 | usableSpace 校验 + finally 清理 | ✅ | EpubBookImporter |
+| 28 | TTS OnInit SUCCESS 前禁 speak | ✅ | AndroidTtsEngine 状态机: speak() 仅在 Ready 执行 (Phase 6 D3/NEVER #28) |
+| 29 | DataStore 强类型 Key | ✅ | PreferenceKeys internal object; NoopSyncCursorStore 不用 DataStore |
+
+---
+
+# 测试覆盖 (181 项)
+
+| 测试文件 | 测试数 | Phase | 验证点 |
+|----------|--------|-------|--------|
+| `PreferencesRepositoryTest` | 3 | 1 | NEVER #29 (类型化 Key) |
+| `CoroutineExceptionGuardTest` | 2 | 1 | NEVER #26 (DAO 异常 → Result.Error) |
+| `PreferencesRepositorySetterTest` | 4 | 2 | SF-1: setter 轮询 |
+| `EpubBookImporterTest` | 4 | 2 | M2/M3/M4 + NEVER #27 |
+| `BookshelfViewModelTest` | 4 | 2 | uiState 发射, 导入状态转换, 取消重置 |
+| `LocatorMapperTest` | 5 | 3 | String↔Locator 往返, null/无效 JSON |
+| `ReadiumMetadataParserTest` | 5 | 3 | NEVER #14, 封面提取, Publication 关闭 |
+| `ReaderViewModelTest` | 4 | 3 | UiState/依赖装配 (Bundle JVM 限制) |
+| `BookRepositoryImplReparseTest` | 4 | 3 | reparseMetadata 流程 |
+| `AndroidNativeApiTest` | 9 | 4/6 | NEVER #8 (origin 校验), null callback 安全, +onSentencesExtracted (Phase 6) |
+| `ReaderJsScriptsTest` | 10 | 4 | NEVER #9 (touchstart→cancelAnimationFrame), origin 传递, 幂等性 |
+| `ReaderUiStatePhase4Test` | 9 | 4 | UiState/TocItem/SearchState/SelectionState/ReaderCommand |
+| `MarkdownExporterTest` | 15 | 5 | HTML→MD 转换 (flexmark), 章节分组, 片段归一化, Unsorted, 多行 blockquote |
+| `KnowledgeUiStateTest` | 15 | 5 | KnowledgeState/KnowledgeItem, ExportState 四态, NoteEditorState 两态, ReaderUiState Phase 5 字段 |
+| `TtsEngineStateTest` | 7 | 6 | 状态转换, NEVER #28 契约, 看门狗/分块常量 |
+| `TtsJsScriptsTest` | 10 | 6 | EXTRACT_SENTENCES (CJK, JSON, 幂等), highlightSentence, CLEAR_TTS_HIGHLIGHT |
+| `LwwMergeTest` | 18 | 7 | LWW 全规则: 新记录/远程新/本地新/删除优先/平局 UUID/时钟偏移 |
+| `SyncRecordTest` | 5 | 7 | SyncType 枚举, SyncMeta 默认值, 序列化往返 |
+| `SyncCursorStoreTest` | 3 | 7 | Noop 行为 |
+| `CanonicalLocatorTest` | 5 | 7 | 键排序, 递归排序, 往返稳定性 |
+| `RepositoryExceptionBoundaryTest` | 8 | 7 | 5 Repo 异常→Result.Error, CancellationException re-throw, ErrorChannel |
+| `RepositoryFlowTest` | 10 | 7 | 5 Repo observe Turbine, Flow 取消, ErrorChannel |
+| `SyncRecordMapperTest` | 6 | 7 | 往返, syncedAt=M2, 类型不匹配, nullable |
+| `SyncManagerTest` | 16 | 7 | pull/push, echo, Mutex, 批量, FK顺序, SyncState, 延迟markSynced, MF1, CancellationException |
+| **合计** | **181** | | **全部通过** |
+
+---
+
+# 后续 Phase 衔接要点
+
+### Phase 4 (JS Bridge 与交互) — ✅ 完成
+- `@JavascriptInterface` + `@Keep` 防 R8 (NEVER #23) — AndroidNativeApi 已实现
+- 校验 `window.location.origin` (NEVER #8) — isAllowedOrigin + 工厂资源级作用域
+- 自动滚动 JS 绑定 `touchstart` → `cancelAnimationFrame` (NEVER #9) — ReaderJsScripts.AUTO_SCROLL_START
+- `registerJavascriptInterface("AndroidNativeApi")` 工厂模式 — buildConfiguration()
+- 侧滑目录 (TOC), 全文搜索 (SearchService), 选词, 书签, 自动滚动 — 全部实现
+
+### Phase 5 (知识管理与导出) — ✅ 完成
+- flexmark-java HTML→MD (不用正则) — MarkdownExporterImpl (FlexmarkHtmlConverter)
+- `rememberLauncherForActivityResult` 唤起 ShareSheet/SAF — CreateDocument + ACTION_SEND
+- 笔记列表 (KnowledgePanel ModalBottomSheet) + 笔记编辑器 (NoteEditorDialog)
+- 按书籍/章节聚合导出 — 章节分组 + 片段归一化
+- core/export 纯数据类 (不依赖 Room 实体) — Oracle M1
+- 笔记创建: 先高亮后笔记 (FK 顺序依赖) — Oracle S2
+
+### Phase 6 (Media3 TTS 听书) — ✅ 完成
+- `FOREGROUND_SERVICE_MEDIA_PLAYBACK` + `FOREGROUND_SERVICE` + `POST_NOTIFICATIONS` 权限已声明 (NEVER #10)
+- Notification Channel 在 super.onCreate() 后创建 (NEVER #25, Oracle M5)
+- TTS 状态机 (Uninitialized/Initializing/Ready/LanguageMissing/Error) — speak() 仅在 Ready (NEVER #28)
+- 手动 AudioManager 音频焦点 (USAGE_MEDIA + CONTENT_TYPE_SPEECH, NEVER #11)
+- MediaController 触发服务启动, 合规 (NEVER #16)
+- SimpleBasePlayer 章节级 MediaItem (Council M9 — 避免通知栏重建风暴)
+- TtsEngine 看门狗 (Council M13) + 线程安全 (Council M11) + 长句分块 (Council S11)
+- TtsSentence 含 Locator (Council M10 — 分页翻页 + 进度保存)
+- generationId 防跨章节高亮竞态 (Council M14)
+- onCleared() 仅 disconnect 不 stop — 后台播放继续 (架构师 M3 修正)
+- JS 句子提取 + CJK 分句 + DOM Range 高亮
+- 睡眠定时器 (5/10/15/30m + 本章结束)
+
+### Phase 7 (测试驱动 + 同步) — ✅ 完成
+- SyncManager: LWW 对称时间戳合并 + UUID 平局决胜 + 时钟偏移钳制
+- 领域模型映射层 (SF-2): SyncRecord (type + meta + payload: JsonObject)
+- SyncEntityHandler 模式: 消除 5× 重复 (Council RISK-MG2)
+- Mutex + ApplicationScope: 并发安全 + 后台存活 (Council RISK-C2/L2)
+- Fenced + Deferred markSynced: 防 sync-编辑竞态 + 非原子失败 (Council RISK-C1/ER1)
+- 批量分页 (BATCH_SIZE=200): 防 OOM (Council RISK-M1)
+- SyncTrigger: MainActivity LifecycleObserver, 30s 防抖 (Oracle M4)
+- FK 约束启用: PRAGMA foreign_keys = ON (Oracle S7)
+- SyncCursorStore 接口 + Noop: Phase 8 DataStore 版本就绪 (Council RISK-MG1)
+- Locator canonical JSON: toCanonicalJsonString() 递归键排序 (S10)
+- 专用 sync dispatcher: Dispatchers.IO.limitedParallelism(2) (Council RISK-M2)
+- 181 项测试全部通过 (65 项新增)
+- Compose UI E2E + TTS 集成测试: 延迟 (需 Robolectric/设备, Oracle S4 Option C)
+
+### Phase 8 (未来 — 真实后端同步)
+- DataStore SyncCursorStore 实现 (替换 NoopSyncCursorStore)
+- 真实 RemoteDataSource 实现 (替换 NoopRemoteDataSource)
+- 类型化密封 SyncPayload (Council RISK-S1 — 安全加固)
+- WorkManager 后台周期同步 (Council RISK-L3 — Android 14+ 后台启动限制)
+- 冲突解决 UI (Council RISK-D2 — 远程删除 vs 本地编辑)
+- Compose UI E2E + TTS 集成测试 (Robolectric 或设备)
+- Room schema 迁移 (如有实体字段变更)
 
 ---
 
@@ -951,7 +1468,7 @@ com.epubreader.app
 # 编译 + 生成 APK
 .\gradlew.bat :app:assembleDebug --no-daemon
 
-# 运行单元测试 (116 项全部通过)
+# 运行单元测试 (181 项全部通过)
 .\gradlew.bat :app:testDebugUnitTest --no-daemon
 
 # 运行插桩测试 (需连接模拟器/设备)

@@ -10,6 +10,7 @@ interface DispatchersProvider {
     val default: CoroutineDispatcher
     val main: CoroutineDispatcher
     val mainImmediate: CoroutineDispatcher
+    val sync: CoroutineDispatcher  // Council RISK-M2: dedicated sync dispatcher
 }
 
 class DefaultDispatchersProvider @Inject constructor() : DispatchersProvider {
@@ -17,4 +18,5 @@ class DefaultDispatchersProvider @Inject constructor() : DispatchersProvider {
     override val default: CoroutineDispatcher = Dispatchers.Default
     override val main: CoroutineDispatcher = Dispatchers.Main
     override val mainImmediate: CoroutineDispatcher = Dispatchers.Main.immediate
+    override val sync: CoroutineDispatcher = Dispatchers.IO.limitedParallelism(2)  // isolated sync I/O
 }

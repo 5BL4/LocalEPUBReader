@@ -32,8 +32,8 @@ interface HighlightDao {
     @Query("SELECT * FROM highlights WHERE updatedAt > :since AND isDeleted = 0")
     suspend fun getUpdatedSince(since: Long): List<HighlightEntity>
 
-    @Query("UPDATE highlights SET syncedAt = :ts WHERE uuid IN (:uuids)")
-    suspend fun markSynced(uuids: List<String>, ts: Long)
+    @Query("UPDATE highlights SET syncedAt = :syncedAt WHERE uuid IN (:uuids) AND updatedAt <= :fenceTs")
+    suspend fun markSynced(uuids: List<String>, syncedAt: Long, fenceTs: Long)
 
     @Query("SELECT * FROM highlights WHERE bookUuid = :bookUuid AND isDeleted = 0")
     fun observeByBook(bookUuid: String): Flow<List<HighlightEntity>>

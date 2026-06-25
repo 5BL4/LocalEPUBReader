@@ -32,8 +32,8 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE updatedAt > :since AND isDeleted = 0")
     suspend fun getUpdatedSince(since: Long): List<NoteEntity>
 
-    @Query("UPDATE notes SET syncedAt = :ts WHERE uuid IN (:uuids)")
-    suspend fun markSynced(uuids: List<String>, ts: Long)
+    @Query("UPDATE notes SET syncedAt = :syncedAt WHERE uuid IN (:uuids) AND updatedAt <= :fenceTs")
+    suspend fun markSynced(uuids: List<String>, syncedAt: Long, fenceTs: Long)
 
     @Query("SELECT * FROM notes WHERE bookUuid = :bookUuid AND isDeleted = 0")
     fun observeByBook(bookUuid: String): Flow<List<NoteEntity>>
