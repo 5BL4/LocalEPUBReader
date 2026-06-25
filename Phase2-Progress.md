@@ -2,7 +2,7 @@
 
 > **项目**: 本地 EPUB 阅读器 (EpubReader)  
 > **Phase**: 2 — 书架 UI 与路由  
-> **状态**: ✅ 完成 (构建通过, 17 项测试全部通过, 无阻塞项)  
+> **状态**: ✅ 完成 (构建通过, 17 项测试全部通过, Oracle 结果审查 ACCEPT_WITH_CHANGES, 无阻塞项)  
 > **日期**: 2026-06-25  
 > **下一步**: 等待用户指令后开始 Phase 3 (Readium v3.x 引擎集成)
 
@@ -103,14 +103,16 @@ importBook(uri, onProgress):
   finally { if (!success) targetFile?.delete() }  ← NEVER #27: 脏数据清理
 ```
 
-### 2.2 BookshelfViewModel (NEVER #2/#12/#21 + S1/S3/S4)
-- **注入接口**: `BookRepository`, `BookImporter` (NEVER #2 — 不注入 DAO)
+### 2.2 BookshelfViewModel (NEVER #2/#12/#21 + S1/S3/S4 + M5/M6)
+- **注入接口**: `BookRepository`, `BookImporter`, `StringProvider`, `ErrorChannel` (NEVER #2 — 不注入 DAO/Context)
 - **无 SavedStateHandle** (S3 — BookshelfRoute 无参数, YAGNI)
+- **无 DispatchersProvider** (S17 — 未使用, 已移除)
 - **双 StateFlow 隔离** (NEVER #12):
   - `importState: StateFlow<ImportState>` — 低频 (Idle→Importing→Success/Error, ~4 次/导入)
   - `importProgress: StateFlow<Float>` — 高频 (0f..1f, 数千次/导入)
 - **取消机制** (S1): `importJob: Job?`, `cancelImport()` 取消 Job + 重置状态
-- **异常映射** (S4): `mapImportError()` — InsufficientStorageException → R.string.error_insufficient_storage
+- **异常映射** (S4 + M5): `mapImportError()` 通过 `StringProvider` (非 Context) 获取本地化字符串 — InsufficientStorageException → R.string.error_insufficient_storage
+- **删除错误路由** (M6): `softDeleteBook` 失败时通过 `errorChannel.tryEmit()` 路由, 不污染 `importState`
 - **协程异常兜底**: `viewModelScope.launch(exceptionHandler.handler)` (NEVER #26)
 
 ### 2.3 BookshelfScreen (NEVER #12/#15/#21 + S1/S9/S10)
@@ -140,7 +142,7 @@ importBook(uri, onProgress):
 | S1 | 取消机制 (Job + Cancel 按钮) | ✅ 已实现 |
 | S2 | ErrorChannel 消费 (Snackbar) | ✅ EpubReaderApp 中 collectAsStateWithLifecycle + Snackbar |
 | S3 | 移除 BookshelfViewModel 的 SavedStateHandle | ✅ 已移除 (YAGNI) |
-| S4 | 异常映射为本地化字符串 | ✅ mapImportError() + @ApplicationContext |
+| S4 | 异常映射为本地化字符串 | ✅ 已实现 (M5: 通过 StringProvider, 非 Context) |
 | S5 | Phase 3 元数据重解析流 | ⏸ 延迟 — MetadataParser 接口已预留 |
 | S6 | 重复导入检测 | ⏸ 延迟 — TODO |
 | S7 | onProgress 线程注释 | ✅ BookImporter.kt KDoc 注明 IO 线程 |
@@ -148,6 +150,14 @@ importBook(uri, onProgress):
 | S9 | BookCard 封面占位符 | ✅ 首字母占位 |
 | S10 | Grid contentPadding (Edge-to-Edge) | ✅ 来自 Scaffold innerPadding |
 | S11 | 取消清理测试 | ✅ 拷贝失败 + 元数据失败测试验证清理 |
+| S13 | 硬编码英文字符串提取 | ✅ bookshelf_delete_confirm_message + action_back |
+| S17 | 移除未使用的 DispatchersProvider | ✅ 已从 VM 移除 |
+
+### 结果审查新增必修项 (M5/M6) — 全部完成
+| # | 项目 | 状态 |
+|---|------|------|
+| M5 | NEVER #2 违规: Context 注入 VM | ✅ 已修复 — 引入 StringProvider 接口, VM 注入 StringProvider 而非 Context |
+| M6 | softDeleteBook 错误污染 importState | ✅ 已修复 — 删除错误路由到 ErrorChannel (Snackbar 消费) |
 
 ---
 
