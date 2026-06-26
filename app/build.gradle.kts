@@ -15,8 +15,8 @@ android {
         applicationId = "com.epubreader.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 9
+        versionName = "0.9.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -31,6 +31,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Sign release with debug key for distributable APK (v0.9.0 GitHub release)
+            signingConfig = android.signingConfigs.getByName("debug")
         }
     }
 
