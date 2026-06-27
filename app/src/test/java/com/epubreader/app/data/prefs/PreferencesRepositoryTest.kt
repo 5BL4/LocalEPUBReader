@@ -57,25 +57,29 @@ class PreferencesRepositoryTest {
         val key4: Preferences.Key<Int> = PreferenceKeys.BACKGROUND_COLOR
         assertEquals("background_color", key4.name)
 
-        // AUTO_PAGE_INTERVAL_MS is a Preferences.Key<Long>
-        val key5: Preferences.Key<Long> = PreferenceKeys.AUTO_PAGE_INTERVAL_MS
-        assertEquals("auto_page_interval_ms", key5.name)
+        // PARAGRAPH_SPACING is a Preferences.Key<Float>
+        val key5: Preferences.Key<Float> = PreferenceKeys.PARAGRAPH_SPACING
+        assertEquals("paragraph_spacing", key5.name)
 
-        // AUTO_SCROLL_SPEED is a Preferences.Key<Float>
-        val key6: Preferences.Key<Float> = PreferenceKeys.AUTO_SCROLL_SPEED
-        assertEquals("auto_scroll_speed", key6.name)
+        // PAGE_MARGINS is a Preferences.Key<Float>
+        val key6: Preferences.Key<Float> = PreferenceKeys.PAGE_MARGINS
+        assertEquals("page_margins", key6.name)
+
+        // SCROLL is a Preferences.Key<Boolean>
+        val key7: Preferences.Key<Boolean> = PreferenceKeys.SCROLL
+        assertEquals("scroll", key7.name)
 
         // TTS_RATE is a Preferences.Key<Float>
-        val key7: Preferences.Key<Float> = PreferenceKeys.TTS_RATE
-        assertEquals("tts_rate", key7.name)
+        val key8: Preferences.Key<Float> = PreferenceKeys.TTS_RATE
+        assertEquals("tts_rate", key8.name)
 
         // TTS_PITCH is a Preferences.Key<Float>
-        val key8: Preferences.Key<Float> = PreferenceKeys.TTS_PITCH
-        assertEquals("tts_pitch", key8.name)
+        val key9: Preferences.Key<Float> = PreferenceKeys.TTS_PITCH
+        assertEquals("tts_pitch", key9.name)
 
         // TTS_ENGINE is a Preferences.Key<String>
-        val key9: Preferences.Key<String> = PreferenceKeys.TTS_ENGINE
-        assertEquals("tts_engine", key9.name)
+        val key10: Preferences.Key<String> = PreferenceKeys.TTS_ENGINE
+        assertEquals("tts_engine", key10.name)
     }
 
     @Test

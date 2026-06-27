@@ -28,10 +28,14 @@ import androidx.annotation.Keep
 @Keep
 class AndroidNativeApi(private val callbackHolder: BridgeCallbackHolder) {
 
+    /**
+     * Called when the user taps the horizontal center of the reading area.
+     * Used to toggle the reader toolbar visibility.
+     */
     @JavascriptInterface
-    fun onAutoScrollStopped(origin: String) {
+    fun onCenterTap(origin: String) {
         if (!isAllowedOrigin(origin)) return
-        callbackHolder.callback?.onAutoScrollStopped()
+        callbackHolder.callback?.onCenterTap()
     }
 
     @JavascriptInterface
@@ -42,7 +46,7 @@ class AndroidNativeApi(private val callbackHolder: BridgeCallbackHolder) {
 
     /**
      * Phase 6 (TTS): Called when JS finishes extracting sentences from the
-     * current chapter. [json] is a JSON array of {id, text, href, progression}.
+     * current chapter. [json] is a JSON object: {"firstVisibleSentenceId": N, "sentences": [{id, text, href, progression, cssSelector}, ...]}
      *
      * Security (NEVER #8): [origin] is validated against [ALLOWED_ORIGINS].
      */
@@ -62,12 +66,12 @@ class AndroidNativeApi(private val callbackHolder: BridgeCallbackHolder) {
 
 /** Callbacks invoked from the WebView thread (via [AndroidNativeApi]). */
 interface BridgeCallback {
-    fun onAutoScrollStopped()
+    fun onCenterTap()
     fun onSelectionChanged(text: String)
 
     /**
      * Phase 6 (TTS): Called when JS sentence extraction completes.
-     * [json] is a JSON array of {id, text, href, progression}.
+     * [json] is a JSON object: {"firstVisibleSentenceId": N, "sentences": [{id, text, href, progression, cssSelector}, ...]}
      * The implementation should parse on a background thread (Oracle S5).
      */
     fun onSentencesExtracted(json: String)

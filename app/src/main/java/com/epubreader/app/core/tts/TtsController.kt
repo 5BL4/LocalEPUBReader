@@ -61,11 +61,21 @@ interface TtsController {
      * @param sentences Sentence list for the current chapter (with Locators).
      * @param chapterTitle Chapter title for the notification.
      * @param bookTitle Book title for the notification.
+     * @param startIndex Zero-based index of the first sentence to speak. Defaults to 0
+     *   (beginning of chapter). When starting TTS from the user's current viewport, this
+     *   is set to the sentence nearest the visible page (Fix A).
      */
-    fun play(sentences: List<TtsSentence>, chapterTitle: String, bookTitle: String)
+    fun play(sentences: List<TtsSentence>, chapterTitle: String, bookTitle: String, startIndex: Int = 0)
 
     /** Pauses playback. */
     fun pause()
+
+    /**
+     * Resumes playback without re-extracting sentences.
+     * Distinct from [play] — does NOT write to TtsBus or set media items.
+     * Just calls MediaController.play() if connected.
+     */
+    fun resume()
 
     /**
      * Stops playback and clears TtsBus (sentences, generationId, etc.).

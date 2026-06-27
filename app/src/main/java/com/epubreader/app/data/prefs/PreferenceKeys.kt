@@ -1,9 +1,9 @@
 package com.epubreader.app.data.prefs
 
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
-import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 
 internal object PreferenceKeys {
@@ -12,8 +12,10 @@ internal object PreferenceKeys {
     val LINE_SPACING = floatPreferencesKey("line_spacing")
     val THEME = stringPreferencesKey("theme")
     val BACKGROUND_COLOR = intPreferencesKey("background_color")
-    val AUTO_PAGE_INTERVAL_MS = longPreferencesKey("auto_page_interval_ms")
-    val AUTO_SCROLL_SPEED = floatPreferencesKey("auto_scroll_speed")
+    val PARAGRAPH_SPACING = floatPreferencesKey("paragraph_spacing")
+    val PARAGRAPH_INDENT = floatPreferencesKey("paragraph_indent")
+    val PAGE_MARGINS = floatPreferencesKey("page_margins")
+    val SCROLL = booleanPreferencesKey("scroll")
     val TTS_RATE = floatPreferencesKey("tts_rate")
     val TTS_PITCH = floatPreferencesKey("tts_pitch")
     val TTS_ENGINE = stringPreferencesKey("tts_engine")

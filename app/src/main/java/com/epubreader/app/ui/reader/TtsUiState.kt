@@ -1,6 +1,7 @@
 package com.epubreader.app.ui.reader
 
 import androidx.compose.runtime.Immutable
+import com.epubreader.app.core.tts.TtsPlaybackState
 
 /**
  * TTS panel UI state (Phase 6).
@@ -15,7 +16,8 @@ data class TtsPanelState(
     val totalSentences: Int = 0,
     val currentSentence: Int = -1,
     val speed: Float = 1.0f,
-    val pitch: Float = 1.0f
+    val pitch: Float = 1.0f,
+    val playbackState: TtsPlaybackState = TtsPlaybackState.Idle
 )
 
 /**

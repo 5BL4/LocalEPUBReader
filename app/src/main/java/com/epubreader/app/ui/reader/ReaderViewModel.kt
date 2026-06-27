@@ -1,5 +1,6 @@
 package com.epubreader.app.ui.reader
 
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -39,6 +40,8 @@ import com.epubreader.app.navigation.ReaderRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -99,7 +102,15 @@ class ReaderViewModel @Inject constructor(
     private val exceptionHandler: AppCoroutineExceptionHandler
 ) : ViewModel() {
 
-    private val bookUuid: String = savedStateHandle.toRoute<ReaderRoute>().bookUuid
+    private val bookUuid: String = runCatching {
+        savedStateHandle.toRoute<ReaderRoute>().bookUuid
+    }.getOrElse {
+        // Fallback: read the raw arg key used by type-safe nav for a String field.
+        // If this also fails, the SavedStateHandle is genuinely malformed.
+        savedStateHandle.get<String>("bookUuid")
+            ?: error("ReaderRoute.bookUuid missing from SavedStateHandle — " +
+                "ensure ReaderScreen is only reached via navigate(ReaderRoute(uuid))")
+    }
 
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
@@ -256,6 +267,10 @@ class ReaderViewModel @Inject constructor(
     /** Current sentence index (state-driven highlighting — Oracle M2). */
     val ttsCurrentSentenceIndex: StateFlow<Int> = ttsController.currentSentenceIndex
 
+    /** Highlight color for the current TTS sentence. Grey during normal playback, yellow during seeking. */
+    private val _ttsHighlightColor = MutableStateFlow(TTS_HIGHLIGHT_GREY)
+    val ttsHighlightColor: StateFlow<String> = _ttsHighlightColor.asStateFlow()
+
     /** Current generation ID (stale-highlight guard — Council M14). */
     val ttsGenerationId: StateFlow<String> = ttsController.generationId
 
@@ -266,11 +281,16 @@ class ReaderViewModel @Inject constructor(
     @Volatile
     private var isTtsNavigating = false
 
+    /** Flag to prevent navigator.go() on initial TTS start (first sentence highlight). */
+    @Volatile
+    var isTtsStarting = false
+
     /** Current chapter href for sentence extraction + chapter transition. */
     @Volatile
     private var currentChapterHref: String = ""
 
-    private var publication: Publication? = null
+    internal var publication: Publication? = null
+        private set
 
     /** Derived EpubPreferences from preferences repository flow. */
     val epubPreferences: StateFlow<EpubPreferences> = preferencesRepository.preferences
@@ -279,6 +299,14 @@ class ReaderViewModel @Inject constructor(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = AppPreferences().toEpubPreferences()
+        )
+
+    /** Raw app preferences (for the settings panel UI). */
+    val appPreferences: StateFlow<AppPreferences> = preferencesRepository.preferences
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = AppPreferences()
         )
 
     /** Initial locator to restore reading position. */
@@ -297,6 +325,43 @@ class ReaderViewModel @Inject constructor(
 
     // S1: Store current TTS sentences for progress saving
     private var currentSentences: List<TtsSentence> = emptyList()
+
+    /** CSS column count for the current chapter (1 = scroll mode, >1 = paginated). */
+    var currentColCount: Int = 1
+        private set
+
+    /**
+     * Returns the Locator for a given sentence index, used for page navigation
+     * during TTS playback to ensure the viewport tracks the spoken sentence.
+     */
+    fun currentSentenceLocator(index: Int): Locator? {
+        return currentSentences.getOrNull(index)?.locator
+    }
+
+    /**
+     * Returns the column (page) index for a given sentence index, used to gate
+     * auto-page-turn: only navigate when the sentence crosses a column boundary.
+     * Returns -1 if the sentence is not found (caller should treat as "always navigate").
+     */
+    fun currentSentenceColIndex(index: Int): Int {
+        return currentSentences.getOrNull(index)?.colIndex ?: -1
+    }
+
+    /**
+     * Checks whether a locator's href matches the current chapter,
+     * preventing accidental navigation to other resources (e.g., cover page).
+     */
+    fun isLocatorInCurrentChapter(locator: Locator): Boolean {
+        val locHref = locator.href.toString()
+            .substringBefore('#').substringBefore('?').trim('/')
+        val curHref = currentChapterHref
+            .substringBefore('#').substringBefore('?').trim('/')
+        if (locHref == curHref) return true
+        // Also try filename-only matching
+        val locFilename = locHref.substringAfterLast('/')
+        val curFilename = curHref.substringAfterLast('/')
+        return locFilename == curFilename
+    }
 
     // Parallel lists for navigation (Oracle S3: TocItem is display-only)
     private var tocLinks: List<Link> = emptyList()
@@ -341,30 +406,40 @@ class ReaderViewModel @Inject constructor(
             }
         }
 
-        // Phase 6: Observe playback state for chapter transition (Oracle M8)
+        // Phase 6: Observe playback state for chapter transition + sleep timer (Oracle M8)
         viewModelScope.launch(exceptionHandler.handler) {
             ttsPlaybackState.collect { state ->
-                if (state is TtsPlaybackState.Ended) {
-                    handleChapterEnd()
-                }
-                // Sleep timer: end-of-chapter mode
-                if (state is TtsPlaybackState.Ended &&
-                    _sleepTimerState.value is SleepTimerState.EndOfChapter
-                ) {
-                    stopTts()
-                    _sleepTimerState.value = SleepTimerState.Inactive
+                when (state) {
+                    is TtsPlaybackState.Ended -> {
+                        // Sleep timer: end-of-chapter mode fires first
+                        if (_sleepTimerState.value is SleepTimerState.EndOfChapter) {
+                            stopTts()
+                            _sleepTimerState.value = SleepTimerState.Inactive
+                        } else {
+                            handleChapterEnd()
+                        }
+                    }
+                    else -> { /* no-op */ }
                 }
             }
         }
 
-        // Phase 6: Observe current sentence index for progress saving (M10)
+        // Phase 6: Observe current sentence index for progress saving (M10) + panel sync
         viewModelScope.launch(exceptionHandler.handler) {
             ttsCurrentSentenceIndex
                 .collect { index ->
+                    _ttsPanelState.update { it.copy(currentSentence = index) }
                     if (index >= 0) {
                         saveTtsProgress(index)
                     }
                 }
+        }
+
+        // Phase 6: Sync playback state to panel state
+        viewModelScope.launch(exceptionHandler.handler) {
+            ttsPlaybackState.collect { state ->
+                _ttsPanelState.update { it.copy(playbackState = state) }
+            }
         }
     }
 
@@ -432,9 +507,11 @@ class ReaderViewModel @Inject constructor(
 
                     // Phase 4: Load TOC
                     loadToc(pub)
+                    android.util.Log.d("ReaderVM", "TOC loaded: ${tocLinks.size} entries, tocItems=${_uiState.value.toc.size}")
 
                     // Build EpubNavigatorFactory
                     val factory = EpubNavigatorFactory(pub)
+                    android.util.Log.d("ReaderVM", "EpubNavigatorFactory created, initialPrefs scroll=${epubPreferences.value.scroll}")
 
                     _navigatorFactory.value = factory
                     _uiState.update {
@@ -493,8 +570,11 @@ class ReaderViewModel @Inject constructor(
 
     fun navigateToTocItem(index: Int) {
         val link = tocLinks.getOrNull(index) ?: return
+        android.util.Log.d("ReaderVM", "navigateToTocItem index=$index link=${link.href}")
         _commands.tryEmit(ReaderCommand.NavigateToLink(link))
+        android.util.Log.d("ReaderVM", "navigateToTocItem emitted NavigateToLink")
         closeTocDrawer()
+        hideToolbar()
     }
 
     // -- Phase 4: Search --
@@ -627,6 +707,7 @@ class ReaderViewModel @Inject constructor(
         val locator = searchLocators.getOrNull(index) ?: return
         _searchState.update { it.copy(currentIndex = index) }
         _commands.tryEmit(ReaderCommand.NavigateToLocator(locator))
+        hideToolbar()
     }
 
     fun clearSearch() {
@@ -849,15 +930,101 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    // -- Phase 4: Auto-scroll (M2: state-driven, no command) --
+    // -- Toolbar & Settings --
 
-    fun toggleAutoScroll() {
-        _uiState.update { it.copy(isAutoScrollActive = !it.isAutoScrollActive) }
+    /** Toggles the top toolbar visibility (called on center-area tap). */
+    fun toggleToolbar() {
+        _uiState.update { it.copy(isToolbarVisible = !it.isToolbarVisible) }
     }
 
-    /** Called from JS bridge (via Fragment) when touch stops auto-scroll. */
-    fun onAutoScrollStopped() {
-        _uiState.update { it.copy(isAutoScrollActive = false) }
+    /** Hides the top toolbar. */
+    fun hideToolbar() {
+        _uiState.update { it.copy(isToolbarVisible = false) }
+    }
+
+    fun toggleSettingsPanel() {
+        val willOpen = !_uiState.value.isSettingsPanelOpen
+        _uiState.update {
+            it.copy(
+                isSettingsPanelOpen = willOpen,
+                isSearchPanelOpen = if (willOpen) false else it.isSearchPanelOpen,
+                isKnowledgePanelOpen = if (willOpen) false else it.isKnowledgePanelOpen
+            )
+        }
+    }
+
+    fun closeSettingsPanel() {
+        _uiState.update { it.copy(isSettingsPanelOpen = false) }
+    }
+
+    /**
+     * Called from the JS bridge when the user taps the center of the reading area.
+     * Dismisses an active selection instead of toggling the toolbar, and ignores
+     * taps while a panel is open.
+     */
+    fun onCenterTap() {
+        if (_selectionState.value.isActive) {
+            dismissSelection()
+            return
+        }
+        if (_uiState.value.isSearchPanelOpen ||
+            _uiState.value.isKnowledgePanelOpen ||
+            _uiState.value.isSettingsPanelOpen ||
+            _ttsPanelState.value.isPanelOpen
+        ) {
+            return
+        }
+        toggleToolbar()
+    }
+
+    // -- Reader settings setters --
+
+    fun setFontSize(value: Float) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setFontSize(value)
+        }
+    }
+
+    fun setFontFamily(value: String) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setFontFamily(value)
+        }
+    }
+
+    fun setTheme(value: com.epubreader.app.data.prefs.ThemeMode) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setTheme(value)
+        }
+    }
+
+    fun setLineSpacing(value: Float) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setLineSpacing(value)
+        }
+    }
+
+    fun setParagraphSpacing(value: Float) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setParagraphSpacing(value)
+        }
+    }
+
+    fun setParagraphIndent(value: Float) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setParagraphIndent(value)
+        }
+    }
+
+    fun setPageMargins(value: Float) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setPageMargins(value)
+        }
+    }
+
+    fun setScrollMode(value: Boolean) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setScrollMode(value)
+        }
     }
 
     // -- Phase 5: Knowledge Panel --
@@ -1004,6 +1171,23 @@ class ReaderViewModel @Inject constructor(
 
     // -- Phase 6: TTS --
 
+    /**
+     * Smart toggle for the top-bar TTS button.
+     * - Idle/Ended: open panel + start TTS
+     * - Playing: pause
+     * - Paused: resume
+     */
+    fun toggleTtsPlayback() {
+        when (val state = ttsPlaybackState.value) {
+            is TtsPlaybackState.Idle, is TtsPlaybackState.Ended -> {
+                _ttsPanelState.update { it.copy(isPanelOpen = true) }
+                startTts()
+            }
+            is TtsPlaybackState.Playing -> pauseTts()
+            is TtsPlaybackState.Paused -> resumeTts()
+        }
+    }
+
     /** Opens the TTS control panel. */
     fun toggleTtsPanel() {
         _ttsPanelState.update { it.copy(isPanelOpen = !it.isPanelOpen) }
@@ -1019,7 +1203,36 @@ class ReaderViewModel @Inject constructor(
      * Locks UserSettings (Council M12).
      */
     fun startTts() {
+        Log.i("ReaderVM", "TTS: start requested, emitting ExtractSentences")
         _ttsPanelState.update { it.copy(isSettingsLocked = true) }
+        // Ensure currentChapterHref is set from current locator before TTS starts
+        if (currentChapterHref.isBlank()) {
+            val locator = _currentLocator.value
+            if (locator != null) {
+                currentChapterHref = locator.href.toString()
+                Log.i("ReaderVM", "TTS: initialized currentChapterHref from locator: $currentChapterHref")
+            }
+        }
+        isTtsStarting = true
+        // Observe the actual first sentence index change (happens asynchronously
+        // in speakCurrentSentence() after engine becomes Ready), then clear the flag.
+        // This prevents the Fragment's combine collector from calling navigator.go()
+        // on the initial sentence (index 0) which would jump the viewport.
+        ttsNavigationJob?.cancel()
+        ttsNavigationJob = viewModelScope.launch(exceptionHandler.handler) {
+            try {
+                withTimeout(5000L) {
+                    ttsCurrentSentenceIndex.first { it >= 0 }
+                }
+                // Fix B: let the Fragment's combine collector process the first sentence
+                // index while isTtsStarting is still true, so navigator.go() is suppressed
+                // for the initial sentence (avoids viewport jump on TTS start).
+                delay(150)
+            } catch (_: TimeoutCancellationException) {
+                Log.w("ReaderVM", "TTS: timed out waiting for first sentence — clearing isTtsStarting")
+            }
+            isTtsStarting = false
+        }
         _commands.tryEmit(ReaderCommand.ExtractSentences)
     }
 
@@ -1028,13 +1241,23 @@ class ReaderViewModel @Inject constructor(
         ttsController.pause()
     }
 
+    /** Resumes paused TTS playback without re-extracting sentences. */
+    fun resumeTts() {
+        if (ttsPlaybackState.value !is TtsPlaybackState.Paused) {
+            Log.w("ReaderVM", "TTS: resumeTts() called but not paused — ignoring")
+            return
+        }
+        ttsController.resume()
+    }
+
     /**
      * Stops TTS playback and unlocks UserSettings.
      * Called on: explicit user stop, book switch, end of book.
      */
     fun stopTts() {
         ttsController.stop()
-        _ttsPanelState.update { it.copy(isSettingsLocked = false, currentSentence = -1) }
+        _ttsPanelState.update { it.copy(isSettingsLocked = false, currentSentence = -1, totalSentences = 0, isPanelOpen = false) }
+        _ttsHighlightColor.value = TTS_HIGHLIGHT_GREY
         _commands.tryEmit(ReaderCommand.ClearTtsHighlight)
         cancelSleepTimer()
     }
@@ -1043,6 +1266,12 @@ class ReaderViewModel @Inject constructor(
         val current = ttsCurrentSentenceIndex.value
         if (current > 0) {
             ttsController.seekToSentence(current - 1)
+            // Show yellow highlight briefly to help user locate new position
+            _ttsHighlightColor.value = TTS_HIGHLIGHT_YELLOW
+            viewModelScope.launch(exceptionHandler.handler) {
+                delay(500L)
+                _ttsHighlightColor.value = TTS_HIGHLIGHT_GREY
+            }
         }
     }
 
@@ -1051,6 +1280,12 @@ class ReaderViewModel @Inject constructor(
         val total = _ttsPanelState.value.totalSentences
         if (current < total - 1) {
             ttsController.seekToSentence(current + 1)
+            // Show yellow highlight briefly to help user locate new position
+            _ttsHighlightColor.value = TTS_HIGHLIGHT_YELLOW
+            viewModelScope.launch(exceptionHandler.handler) {
+                delay(500L)
+                _ttsHighlightColor.value = TTS_HIGHLIGHT_GREY
+            }
         }
     }
 
@@ -1076,10 +1311,12 @@ class ReaderViewModel @Inject constructor(
      * and starts playback.
      */
     fun onSentencesExtracted(json: String) {
+        Log.i("ReaderVM", "TTS: onSentencesExtracted, json length=${json.length}")
         viewModelScope.launch(exceptionHandler.handler) {
-            val sentences = withContext(dispatchers.default) {
-                parseSentences(json)
+            val (sentences, startIndex) = withContext(dispatchers.default) {
+                parseSentencesWithStartIndex(json)
             }
+            Log.i("ReaderVM", "TTS: parsed ${sentences.size} sentences, startIndex=$startIndex")
             if (sentences.isEmpty()) {
                 errorChannel.tryEmit(
                     AppError("TTS: no sentences extracted from current chapter")
@@ -1095,46 +1332,120 @@ class ReaderViewModel @Inject constructor(
 
             val chapterTitle = findChapterTitle(currentChapterHref) ?: ""
             val bookTitle = publication?.metadata?.title ?: ""
-            ttsController.play(sentences, chapterTitle, bookTitle)
+            ttsController.play(sentences, chapterTitle, bookTitle, startIndex)
         }
     }
 
     /**
-     * Parses JS-extracted JSON into [TtsSentence] list with Locators (Architect M10).
-     * JS provides {id, text, href, progression}; Kotlin assembles full Locator
-     * using publication.readingOrder.
+     * Parses JS-extracted JSON into [TtsSentence] list + the first visible sentence index.
+     *
+     * Supports two JSON formats:
+     * - New (Fix A): {"firstVisibleSentenceId": N, "sentences": [{id, text, href, progression, cssSelector}, ...]}
+     * - Legacy: [{id, text, href, progression}, ...]  (bare array — startIndex defaults to 0)
+     *
+     * Kotlin assembles full Locator using publication.readingOrder (Architect M10).
+     * cssSelector (Fix D) is stored in Locator.Locations.otherLocations for precise navigation.
      */
-    private fun parseSentences(json: String): List<TtsSentence> {
-        val pub = publication ?: return emptyList()
+    private fun parseSentencesWithStartIndex(json: String): Pair<List<TtsSentence>, Int> {
+        val pub = publication ?: return emptyList<TtsSentence>() to 0
         return try {
-            val array = JSONArray(json)
-            (0 until array.length()).map { i ->
-                val obj = array.getJSONObject(i)
-                val id = obj.getInt("id")
-                val text = obj.getString("text")
-                val href = obj.optString("href", "")
-                val progression = obj.optDouble("progression", 0.0)
-                val locator = buildLocator(pub, href, progression)
-                TtsSentence(id = id, text = text, locator = locator)
+            val trimmed = json.trim()
+            if (trimmed.startsWith("[")) {
+                // Legacy bare array format — no colCount, default to 1 (scroll mode)
+                val array = JSONArray(json)
+                currentColCount = 1
+                parseSentenceArray(pub, array) to 0
+            } else {
+                // New object format: {firstVisibleSentenceId, colCount, sentences: [...]}
+                val root = JSONObject(json)
+                val startIndex = root.optInt("firstVisibleSentenceId", 0)
+                    .coerceAtLeast(0)
+                currentColCount = root.optInt("colCount", 1)
+                val array = root.optJSONArray("sentences") ?: JSONArray()
+                parseSentenceArray(pub, array) to startIndex
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             android.util.Log.e("ReaderViewModel", "Failed to parse sentences JSON", e)
-            emptyList()
+            emptyList<TtsSentence>() to 0
+        }
+    }
+
+    /** Parses a JSONArray of sentence objects into [TtsSentence] list. */
+    private fun parseSentenceArray(pub: Publication, array: JSONArray): List<TtsSentence> {
+        return (0 until array.length()).map { i ->
+            val obj = array.getJSONObject(i)
+            val id = obj.getInt("id")
+            val text = obj.getString("text")
+            val href = obj.optString("href", "")
+            val progression = obj.optDouble("progression", 0.0)
+            val cssSelector = obj.optString("cssSelector", "").ifBlank { null }
+            val colIndex = obj.optInt("colIndex", 0)
+            val locator = buildLocator(pub, href, progression, cssSelector, text)
+            if (locator == null) {
+                Log.w("ReaderVM", "parseSentenceArray: null locator for sentence $id (href='$href', progression=$progression)")
+            }
+            TtsSentence(id = id, text = text, locator = locator, colIndex = colIndex)
         }
     }
 
     /** Assembles a Readium Locator from href + progression (Architect guide). */
-    private fun buildLocator(pub: Publication, href: String, progression: Double): Locator? {
-        val normalizedHref = href.substringBefore('#').substringBefore('?').trimEnd('/')
-        val link = pub.readingOrder.find {
-            it.href.toString().substringBefore('#').substringBefore('?').trimEnd('/') == normalizedHref
-        } ?: pub.readingOrder.firstOrNull()
-        ?: return null
+    private fun buildLocator(pub: Publication, href: String, progression: Double, cssSelector: String? = null, sentenceText: String? = null): Locator? {
+        val normalizedHref = href
+            .substringBefore('#')
+            .substringBefore('?')
+            .trim('/')
+        // Remove leading path segments to get just the filename for matching
+        val filename = normalizedHref.substringAfterLast('/')
 
-        val baseLocator = pub.locatorFromLink(link) ?: return null
-        return baseLocator.copy(locations = baseLocator.locations.copy(progression = progression))
+        val link = pub.readingOrder.find {
+            val linkHref = it.href.toString()
+                .substringBefore('#')
+                .substringBefore('?')
+                .trim('/')
+            linkHref == normalizedHref || linkHref == filename ||
+                linkHref.endsWith("/$filename") || linkHref.endsWith("\\$filename")
+        }
+        if (link == null) {
+            Log.w("ReaderVM", "buildLocator: no match for href='$href' (normalized='$normalizedHref', filename='$filename') in readingOrder")
+        }
+
+        // Use the matched link, or current chapter's link if available, or first reading order entry
+        val resolvedLink = link
+            ?: pub.readingOrder.find {
+                val linkHref = it.href.toString().substringBefore('#').substringBefore('?').trim('/')
+                val curHref = currentChapterHref.substringBefore('#').substringBefore('?').trim('/')
+                // currentChapterHref may be a full URL; compare by filename as well
+                linkHref == curHref ||
+                    linkHref.substringAfterLast('/') == curHref.substringAfterLast('/') ||
+                    linkHref.endsWith("/${curHref.substringAfterLast('/')}")
+            }
+            ?: run {
+                Log.w("ReaderVM", "buildLocator: all fallbacks exhausted for href='$href', currentChapterHref='$currentChapterHref' — returning null")
+                return null
+            }
+
+        val baseLocator = pub.locatorFromLink(resolvedLink) ?: return null
+        // Fix D: store cssSelector in otherLocations for precise element-level navigation.
+        // Readium's navigator.go() can use this to scroll directly to the element,
+        // avoiding progression rounding errors in CSS multi-column layout.
+        val otherLocations = if (cssSelector != null) {
+            baseLocator.locations.otherLocations + ("cssSelector" to cssSelector)
+        } else {
+            baseLocator.locations.otherLocations
+        }
+        // Populate text.highlight so Readium's navigator.go() uses the idempotent
+        // scrollToLocator path (TextQuoteAnchor) instead of falling through to the
+        // non-idempotent progression-based setCurrentItem. When sentenceText is
+        // null (legacy extraction format), keep the base locator's text unchanged.
+        return baseLocator.copy(
+            text = if (sentenceText != null) Locator.Text(highlight = sentenceText) else baseLocator.text,
+            locations = baseLocator.locations.copy(
+                progression = progression,
+                otherLocations = otherLocations
+            )
+        )
     }
 
     /**
@@ -1144,15 +1455,17 @@ class ReaderViewModel @Inject constructor(
     private fun handleChapterEnd() {
         val pub = publication ?: return
         val currentHref = currentChapterHref
+        Log.i("ReaderVM", "TTS: handleChapterEnd currentHref='$currentHref'")
         val nextLink = nextReadingOrderLink(pub, currentHref)
 
         if (nextLink == null) {
             // End of book
-            android.util.Log.i("ReaderViewModel", "TTS reached end of book")
+            Log.i("ReaderVM", "TTS reached end of book")
             stopTts()
             return
         }
 
+        Log.i("ReaderVM", "TTS: navigating to next chapter: ${nextLink.href}")
         // Navigate to next chapter
         isTtsNavigating = true
         _commands.tryEmit(ReaderCommand.ClearTtsHighlight)
@@ -1162,13 +1475,22 @@ class ReaderViewModel @Inject constructor(
 
     /**
      * Finds the next readingOrder link after [currentHref] (Oracle M8).
-     * Uses same normalization as findChapterTitle.
+     * Normalizes leading slashes, fragments, query params, and trailing slashes
+     * to match against reading order entries.
      */
     private fun nextReadingOrderLink(pub: Publication, currentHref: String): Link? {
         if (currentHref.isBlank()) return pub.readingOrder.firstOrNull()
-        val normalized = currentHref.substringBefore('#').substringBefore('?').trimEnd('/')
+        val normalized = currentHref
+            .substringBefore('#')
+            .substringBefore('?')
+            .trimEnd('/')
+            .trimStart('/')
         val index = pub.readingOrder.indexOfFirst {
-            it.href.toString().substringBefore('#').substringBefore('?').trimEnd('/') == normalized
+            it.href.toString()
+                .substringBefore('#')
+                .substringBefore('?')
+                .trimEnd('/')
+                .trimStart('/') == normalized
         }
         if (index < 0 || index >= pub.readingOrder.size - 1) return null
         return pub.readingOrder[index + 1]
@@ -1183,6 +1505,27 @@ class ReaderViewModel @Inject constructor(
         currentChapterHref = href
         if (isTtsNavigating) {
             isTtsNavigating = false
+            // Fix C: re-arm isTtsStarting to suppress navigator.go() for the first
+            // sentence of the new chapter, letting CSS columns settle before any
+            // page navigation. Use generationId to detect the new play() session
+            // (the old chapter's sentence index may still be >= 0).
+            isTtsStarting = true
+            val prevGenId = ttsGenerationId.value
+            ttsNavigationJob?.cancel()
+            ttsNavigationJob = viewModelScope.launch(exceptionHandler.handler) {
+                try {
+                    withTimeout(8000L) {
+                        // Wait for new generation (play() sets a new genId after extraction)
+                        ttsGenerationId.first { it != prevGenId }
+                        // Then wait for the first sentence index of the new chapter
+                        ttsCurrentSentenceIndex.first { it >= 0 }
+                    }
+                    delay(150)
+                } catch (_: TimeoutCancellationException) {
+                    Log.w("ReaderVM", "TTS: chapter transition timed out waiting for first sentence")
+                }
+                isTtsStarting = false
+            }
             // TTS-driven navigation: extract sentences for new chapter
             _commands.tryEmit(ReaderCommand.ExtractSentences)
         } else if (ttsPlaybackState.value is TtsPlaybackState.Playing ||
@@ -1267,5 +1610,7 @@ class ReaderViewModel @Inject constructor(
         private const val HIGHLIGHT_COLOR_HEX = "#FFFF00"
         private const val HIGHLIGHT_DECORATION_GROUP = "highlights"
         private const val SEARCH_DECORATION_GROUP = "search"
+        private const val TTS_HIGHLIGHT_GREY = "rgba(180,180,180,0.55)"
+        private const val TTS_HIGHLIGHT_YELLOW = "#FFEB3B"
     }
 }

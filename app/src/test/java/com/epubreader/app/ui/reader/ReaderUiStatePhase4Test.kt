@@ -27,7 +27,8 @@ class ReaderUiStatePhase4Test {
         assertTrue(state.toc.isEmpty())
         assertFalse(state.isTocDrawerOpen)
         assertFalse(state.isSearchPanelOpen)
-        assertFalse(state.isAutoScrollActive)
+        assertFalse(state.isToolbarVisible)
+        assertFalse(state.isSettingsPanelOpen)
     }
 
     @Test
@@ -43,13 +44,15 @@ class ReaderUiStatePhase4Test {
             toc = toc,
             isTocDrawerOpen = true,
             isSearchPanelOpen = false,
-            isAutoScrollActive = true
+            isToolbarVisible = true,
+            isSettingsPanelOpen = true
         )
         val updated = state.copy(error = "Error")
         assertEquals(toc, updated.toc)
         assertTrue(updated.isTocDrawerOpen)
         assertFalse(updated.isSearchPanelOpen)
-        assertTrue(updated.isAutoScrollActive)
+        assertTrue(updated.isToolbarVisible)
+        assertTrue(updated.isSettingsPanelOpen)
         assertEquals("Error", updated.error)
     }
 

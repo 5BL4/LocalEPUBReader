@@ -22,9 +22,13 @@ import org.readium.r2.shared.publication.Locator
  * @param locator Readium Locator for navigation + progress saving. Null if
  *   extraction failed for this sentence (TTS can still speak it, but
  *   highlighting/progress won't work for this sentence).
+ * @param colIndex CSS multi-column page index (0-based) for this sentence.
+ *   Used to gate auto-page-turn: navigation only occurs when a sentence
+ *   crosses a column/page boundary. Defaults to 0 for single-column layouts.
  */
 data class TtsSentence(
     val id: Int,
     val text: String,
-    val locator: Locator?
+    val locator: Locator?,
+    val colIndex: Int = 0
 )

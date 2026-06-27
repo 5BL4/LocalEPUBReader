@@ -2,14 +2,28 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      FOREGROUND_SERVICE_MEDIA_PLAYBACK declared now (NEVER #10).
-      The foregroundServiceType="mediaPlayback" service element and the
-      Notification Channel registration arrive in Phase 6 (TTS). The
-      permission alone satisfies the never-rule and causes no issues.
+      Readium EpubNavigatorFragment uses a WebView that loads resources via
+      https://readium_package/ and https://readium_assets/ URL schemes. Even
+      though shouldInterceptRequest() intercepts these requests locally (no
+      actual network I/O), the WebView still requires INTERNET permission to
+      process https:// URLs. Without this permission, the app crashes when the
+      reader opens a book. Both Readium test-app and demos declare INTERNET.
     -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- FOREGROUND_SERVICE_MEDIA_PLAYBACK (NEVER #10). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Android 11+ (API 30+) package visibility: TextToSpeech engine discovery
+         requires this <queries> declaration, otherwise TTS init fails silently. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
 
     <application
         android:name=".EpubReaderApplication"

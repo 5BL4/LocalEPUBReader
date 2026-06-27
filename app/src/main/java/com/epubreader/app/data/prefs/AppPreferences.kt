@@ -9,8 +9,10 @@ data class AppPreferences(
     val lineSpacing: Float = 1.4f,
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val backgroundColor: Int = 0xFFFFFFFF.toInt(),
-    val autoPageIntervalMs: Long = 5000L,
-    val autoScrollSpeed: Float = 1.0f,
+    val paragraphSpacing: Float = 0f,
+    val paragraphIndent: Float = 0f,
+    val pageMargins: Float = 1f,
+    val scroll: Boolean = false,
     val ttsRate: Float = 1.0f,
     val ttsPitch: Float = 1.0f,
     val ttsEngine: String? = null

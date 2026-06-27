@@ -20,8 +20,10 @@ class PreferencesRepositoryImpl @Inject constructor(
             lineSpacing = p[PreferenceKeys.LINE_SPACING] ?: 1.4f,
             theme = p[PreferenceKeys.THEME]?.let { runCatching { ThemeMode.valueOf(it) }.getOrDefault(ThemeMode.SYSTEM) } ?: ThemeMode.SYSTEM,
             backgroundColor = p[PreferenceKeys.BACKGROUND_COLOR] ?: 0xFFFFFFFF.toInt(),
-            autoPageIntervalMs = p[PreferenceKeys.AUTO_PAGE_INTERVAL_MS] ?: 5000L,
-            autoScrollSpeed = p[PreferenceKeys.AUTO_SCROLL_SPEED] ?: 1.0f,
+            paragraphSpacing = p[PreferenceKeys.PARAGRAPH_SPACING] ?: 0f,
+            paragraphIndent = p[PreferenceKeys.PARAGRAPH_INDENT] ?: 0f,
+            pageMargins = p[PreferenceKeys.PAGE_MARGINS] ?: 1f,
+            scroll = p[PreferenceKeys.SCROLL] ?: false,
             ttsRate = p[PreferenceKeys.TTS_RATE] ?: 1.0f,
             ttsPitch = p[PreferenceKeys.TTS_PITCH] ?: 1.0f,
             ttsEngine = p[PreferenceKeys.TTS_ENGINE]
@@ -33,8 +35,10 @@ class PreferencesRepositoryImpl @Inject constructor(
     override suspend fun setLineSpacing(value: Float) { dataStore.edit { it[PreferenceKeys.LINE_SPACING] = value } }
     override suspend fun setTheme(value: ThemeMode) { dataStore.edit { it[PreferenceKeys.THEME] = value.name } }
     override suspend fun setBackgroundColor(value: Int) { dataStore.edit { it[PreferenceKeys.BACKGROUND_COLOR] = value } }
-    override suspend fun setAutoPageIntervalMs(value: Long) { dataStore.edit { it[PreferenceKeys.AUTO_PAGE_INTERVAL_MS] = value } }
-    override suspend fun setAutoScrollSpeed(value: Float) { dataStore.edit { it[PreferenceKeys.AUTO_SCROLL_SPEED] = value } }
+    override suspend fun setParagraphSpacing(value: Float) { dataStore.edit { it[PreferenceKeys.PARAGRAPH_SPACING] = value } }
+    override suspend fun setParagraphIndent(value: Float) { dataStore.edit { it[PreferenceKeys.PARAGRAPH_INDENT] = value } }
+    override suspend fun setPageMargins(value: Float) { dataStore.edit { it[PreferenceKeys.PAGE_MARGINS] = value } }
+    override suspend fun setScrollMode(value: Boolean) { dataStore.edit { it[PreferenceKeys.SCROLL] = value } }
     override suspend fun setTtsRate(value: Float) { dataStore.edit { it[PreferenceKeys.TTS_RATE] = value } }
     override suspend fun setTtsPitch(value: Float) { dataStore.edit { it[PreferenceKeys.TTS_PITCH] = value } }
     override suspend fun setTtsEngine(value: String?) {

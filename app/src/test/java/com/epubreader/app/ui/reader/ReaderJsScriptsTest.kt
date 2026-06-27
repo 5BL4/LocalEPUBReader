@@ -5,62 +5,11 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * Unit tests for [ReaderJsScripts] — verifies NEVER #9 compliance
- * (auto-scroll JS must bind touchstart → cancelAnimationFrame).
+ * Unit tests for [ReaderJsScripts] — verifies injected JS snippets
+ * (center-tap listener, selection listener) are idempotent, passive,
+ * and pass origin for security validation (NEVER #8).
  */
 class ReaderJsScriptsTest {
-
-    @Test
-    fun `AUTO_SCROLL_START contains requestAnimationFrame for smooth scrolling`() {
-        assertTrue(
-            ReaderJsScripts.AUTO_SCROLL_START.contains("requestAnimationFrame"),
-            "Auto-scroll script must use requestAnimationFrame"
-        )
-    }
-
-    @Test
-    fun `AUTO_SCROLL_START binds touchstart with cancelAnimationFrame`() {
-        assertTrue(
-            ReaderJsScripts.AUTO_SCROLL_START.contains("touchstart"),
-            "Auto-scroll script must bind touchstart event (NEVER #9)"
-        )
-        assertTrue(
-            ReaderJsScripts.AUTO_SCROLL_START.contains("cancelAnimationFrame"),
-            "Auto-scroll script must call cancelAnimationFrame on touch (NEVER #9)"
-        )
-    }
-
-    @Test
-    fun `AUTO_SCROLL_START notifies native on touch via onAutoScrollStopped`() {
-        assertTrue(
-            ReaderJsScripts.AUTO_SCROLL_START.contains("onAutoScrollStopped"),
-            "Auto-scroll script must notify native when touch stops scrolling"
-        )
-    }
-
-    @Test
-    fun `AUTO_SCROLL_START passes window location origin for security validation`() {
-        assertTrue(
-            ReaderJsScripts.AUTO_SCROLL_START.contains("window.location.origin"),
-            "Auto-scroll script must pass origin to native (NEVER #8)"
-        )
-    }
-
-    @Test
-    fun `AUTO_SCROLL_START is idempotent with guard check`() {
-        assertTrue(
-            ReaderJsScripts.AUTO_SCROLL_START.contains("__epubAutoScroll"),
-            "Auto-scroll script must be idempotent (check existing flag)"
-        )
-    }
-
-    @Test
-    fun `AUTO_SCROLL_STOP calls stop function`() {
-        assertTrue(
-            ReaderJsScripts.AUTO_SCROLL_STOP.contains("stop"),
-            "Auto-scroll stop script must call the stop function"
-        )
-    }
 
     @Test
     fun `SELECTION_LISTENER contains selectionchange event and AndroidNativeApi`() {
@@ -91,10 +40,47 @@ class ReaderJsScriptsTest {
     }
 
     @Test
-    fun `AUTO_SCROLL_START uses passive touch listeners`() {
+    fun `CENTER_TAP_LISTENER binds click event and AndroidNativeApi`() {
         assertTrue(
-            ReaderJsScripts.AUTO_SCROLL_START.contains("passive: true"),
-            "Touch listeners must be passive to avoid blocking scroll"
+            ReaderJsScripts.CENTER_TAP_LISTENER.contains("addEventListener('click'"),
+            "Center-tap listener must bind click event"
+        )
+        assertTrue(
+            ReaderJsScripts.CENTER_TAP_LISTENER.contains("onCenterTap"),
+            "Center-tap listener must call onCenterTap bridge"
+        )
+    }
+
+    @Test
+    fun `CENTER_TAP_LISTENER passes window location origin`() {
+        assertTrue(
+            ReaderJsScripts.CENTER_TAP_LISTENER.contains("window.location.origin"),
+            "Center-tap listener must pass origin to native (NEVER #8)"
+        )
+    }
+
+    @Test
+    fun `CENTER_TAP_LISTENER is idempotent with guard check`() {
+        assertTrue(
+            ReaderJsScripts.CENTER_TAP_LISTENER.contains("__epubCenterTap"),
+            "Center-tap listener must be idempotent (check existing flag)"
+        )
+    }
+
+    @Test
+    fun `CENTER_TAP_LISTENER uses passive listener`() {
+        assertTrue(
+            ReaderJsScripts.CENTER_TAP_LISTENER.contains("passive: true"),
+            "Center-tap listener must be passive"
+        )
+    }
+
+    @Test
+    fun `CENTER_TAP_LISTENER checks horizontal center band`() {
+        assertTrue(
+            ReaderJsScripts.CENTER_TAP_LISTENER.contains("0.33") &&
+                ReaderJsScripts.CENTER_TAP_LISTENER.contains("0.67"),
+            "Center-tap listener must restrict to horizontal center third"
         )
     }
 }

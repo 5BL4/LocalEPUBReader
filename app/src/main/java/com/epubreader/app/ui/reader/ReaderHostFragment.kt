@@ -9,20 +9,24 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.fragment.app.Fragment
-import androidx.fragment.app.FragmentFactory
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.epubreader.app.R
 import dagger.hilt.android.AndroidEntryPoint
+
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.readium.r2.navigator.epub.EpubNavigatorFactory
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
+import org.readium.r2.navigator.epub.EpubPreferences
 import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.util.AbsoluteUrl
 
@@ -44,6 +48,14 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
     // JS Bridge callback holder — Fragment sets/clears callback (NEVER #20)
     private val bridgeCallbackHolder = BridgeCallbackHolder()
 
+    // Safety net: prevents app crashes if setupNavigator or any collector throws.
+    // viewLifecycleOwner.lifecycleScope has no CoroutineExceptionHandler by default,
+    // so an uncaught exception would propagate to Thread.uncaughtExceptionHandler
+    // and crash the app. This handler logs and swallows non-cancellation exceptions.
+    private val collectorExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e("ReaderHostFragment", "Uncaught exception in navigator collector", throwable)
+    }
+
     /**
      * Stores the ViewModel reference. Safe to call multiple times (idempotent).
      * If the view is already created, starts collectors immediately.
@@ -61,15 +73,22 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
         if (existingFactory != null) {
             childFragmentManager.fragmentFactory = existingFactory.createFragmentFactory(
                 initialLocator = viewModel?.initialLocator,
+                initialPreferences = viewModel?.epubPreferences?.value ?: EpubPreferences(),
                 listener = this,
                 configuration = buildConfiguration()
             )
             usedDefaultFactory = false
         } else {
-            childFragmentManager.fragmentFactory = DefaultReaderFragmentFactory()
+            // viewModel not bound yet (AndroidViewBinding calls bind() after onViewCreated).
+            // Do NOT install DefaultReaderFragmentFactory — EpubNavigatorFragment has no
+            // no-arg constructor, so any restoration attempt would throw NoSuchMethodException.
             usedDefaultFactory = true
         }
-        super.onCreate(savedInstanceState)
+        // Pass null to skip child FragmentManager restoration. The EpubNavigatorFragment
+        // cannot be reinstantiated without the Publication (only available after bind()),
+        // so it is recreated fresh by setupNavigator() once the ViewModel binds.
+        // Reading position is restored from Room in openPublication().
+        super.onCreate(null)
     }
 
     /**
@@ -98,7 +117,13 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
         super.onViewCreated(view, savedInstanceState)
         val factory = viewModel?.navigatorFactory?.value
         if (factory != null && !navigatorAdded) {
-            setupNavigator(factory)
+            try {
+                setupNavigator(factory)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("ReaderHostFragment", "setupNavigator failed in onViewCreated", e)
+            }
         }
         if (viewModel != null) {
             startCollectors()
@@ -120,12 +145,18 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
      */
     private fun startCollectors() {
         val vm = viewModel ?: return
-        viewLifecycleOwner.lifecycleScope.launch {
+        viewLifecycleOwner.lifecycleScope.launch(collectorExceptionHandler) {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     vm.navigatorFactory.collectLatest { factory ->
                         if (factory != null && !navigatorAdded) {
-                            setupNavigator(factory)
+                            try {
+                                setupNavigator(factory)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Log.e("ReaderHostFragment", "setupNavigator failed", e)
+                            }
                         }
                     }
                 }
@@ -145,6 +176,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
 
         childFragmentManager.fragmentFactory = factory.createFragmentFactory(
             initialLocator = viewModel?.initialLocator,
+            initialPreferences = viewModel?.epubPreferences?.value ?: EpubPreferences(),
             listener = this,
             configuration = buildConfiguration()
         )
@@ -172,7 +204,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
 
         childFragmentManager.beginTransaction()
             .replace(R.id.reader_container, navigatorFragment, NAVIGATOR_TAG)
-            .commit()
+            .commitNow()
 
         // S1: submit initial preferences immediately to avoid CSS flicker
         viewModel?.epubPreferences?.value?.let { prefs ->
@@ -213,44 +245,22 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                             } catch (e: Exception) {
                                 Log.e("ReaderHostFragment", "Failed to inject selection listener", e)
                             }
-                            // Re-inject auto-scroll if active
-                            if (viewModel?.uiState?.value?.isAutoScrollActive == true) {
-                                try {
-                                    navigator.evaluateJavascript(ReaderJsScripts.AUTO_SCROLL_START)
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: Exception) {
-                                    Log.e("ReaderHostFragment", "Failed to re-inject auto-scroll", e)
-                                }
+                            try {
+                                navigator.evaluateJavascript(ReaderJsScripts.CENTER_TAP_LISTENER)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Log.e("ReaderHostFragment", "Failed to inject center-tap listener", e)
                             }
                         }
                 }
                 // M7: Commands collector — only after navigator is confirmed ready.
                 // With M1's buffer, commands emitted during the gap are held and delivered here.
                 launch {
+                    android.util.Log.d("ReaderHost", "Commands collector started")
                     viewModel?.commands?.collect { command ->
                         handleCommand(navigator, command)
                     }
-                }
-                // M2: Auto-scroll state-driven — Fragment observes isAutoScrollActive
-                // and injects START/STOP JS. No command channel for auto-scroll.
-                launch {
-                    viewModel?.uiState
-                        ?.map { it.isAutoScrollActive }
-                        ?.distinctUntilChanged()
-                        ?.collect { isActive ->
-                            try {
-                                if (isActive) {
-                                    navigator.evaluateJavascript(ReaderJsScripts.AUTO_SCROLL_START)
-                                } else {
-                                    navigator.evaluateJavascript(ReaderJsScripts.AUTO_SCROLL_STOP)
-                                }
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                Log.e("ReaderHostFragment", "Auto-scroll JS failed", e)
-                            }
-                        }
                 }
                 // Highlight decorations — collect directly from VM StateFlow.
                 // This avoids SharedFlow timing issues (replay=0 would lose initial emissions).
@@ -268,20 +278,67 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                 // Phase 6 (M2): TTS sentence highlighting — state-driven (not command).
                 // currentSentenceIndex changes every few seconds; using a command would
                 // flood the SharedFlow buffer (DROP_OLDEST would drop navigation commands).
+                // color is grey during normal playback, yellow briefly during seeking.
+                // Navigator.go() is gated by column-index change to avoid premature page
+                // turns on same-page sentences. text.highlight makes scrollToLocator idempotent.
                 launch {
-                    viewModel?.ttsCurrentSentenceIndex
-                        ?.collect { index ->
-                            if (index >= 0) {
-                                // M10: navigate to sentence locator first (paginated mode)
-                                // then highlight via JS
+                    val vm = viewModel ?: return@launch
+                    // Throttle: process at most one highlight every 100ms to prevent
+                    // navigator.go() from flooding the Readium navigator with rapid page
+                    // flips. 100ms is tuned for sentence-level updates (faster TTS speeds
+                    // can complete sentences in <1s; the old 300ms throttle caused visual lag,
+                    // and throttleLatest is not available in this kotlinx-coroutines version).
+                    var lastProcessedTime = 0L
+                    var lastNavigatedColIndex = -1
+                    var lastGenId = ""
+                    combine(
+                        vm.ttsCurrentSentenceIndex,
+                        vm.ttsHighlightColor,
+                        vm.ttsGenerationId
+                    ) { index, color, genId -> Triple(index, color, genId) }
+                        .distinctUntilChanged()
+                        .collect { triple ->
+                            // Reset page tracker when a new TTS session/chapter starts (new generationId),
+                            // so the first non-suppressed sentence can navigate freely.
+                            if (triple.third != lastGenId) {
+                                lastGenId = triple.third
+                                lastNavigatedColIndex = -1
+                            }
+                            if (triple.first >= 0) {
+                                val now = System.currentTimeMillis()
+                                if (now - lastProcessedTime < 100L) return@collect
+                                lastProcessedTime = now
                                 try {
+                                    val locator = vm.currentSentenceLocator(triple.first)
+                                    // isTtsStarting suppresses the first sentence after start/chapter-transition.
+                                    // Use column-index dedup: only navigate when colIndex changes (paginated)
+                                    // or always (scroll mode), avoiding premature page turns on same-page sentences.
+                                    if (locator != null && vm.isLocatorInCurrentChapter(locator) &&
+                                        !vm.isTtsStarting) {
+                                        val colCount = vm.currentColCount
+                                        val colIndex = vm.currentSentenceColIndex(triple.first)
+                                        // Scroll mode (colCount <= 1): always go() — scrollToLocator
+                                        //   is idempotent via text.highlight (no-op when visible).
+                                        // Paginated mode (colCount > 1): only go() when column
+                                        //   changes — colIndex is the DOM-measured column, so
+                                        //   same-column = same visible page. This also protects
+                                        //   against TextQuoteAnchor failure (CJK content) by
+                                        //   preventing spurious same-column setCurrentItem calls.
+                                        if (colCount <= 1 || colIndex < 0 ||
+                                            lastNavigatedColIndex < 0 ||
+                                            colIndex != lastNavigatedColIndex) {
+                                            navigator.go(locator, animated = false)
+                                            lastNavigatedColIndex = colIndex
+                                        }
+                                    }
+                                    // Highlight is UNCONDITIONAL — every sentence gets highlighted
                                     navigator.evaluateJavascript(
-                                        TtsJsScripts.highlightSentence(index)
+                                        TtsJsScripts.highlightSentence(triple.first, triple.second)
                                     )
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (e: Exception) {
-                                    Log.e("ReaderHostFragment", "TTS highlight JS failed", e)
+                                    Log.e("ReaderHostFragment", "TTS highlight/nav failed", e)
                                 }
                             }
                         }
@@ -295,7 +352,30 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
         try {
             when (command) {
                 is ReaderCommand.NavigateToLocator -> navigator.go(command.locator)
-                is ReaderCommand.NavigateToLink -> navigator.go(command.link)
+                is ReaderCommand.NavigateToLink -> {
+                    val href = command.link.href
+                    android.util.Log.d("ReaderHost", "handleCommand NavigateToLink href=$href")
+                    val success = navigator.go(command.link)
+                    if (!success) {
+                        android.util.Log.w("ReaderHost", "NavigateToLink failed for href=$href, trying reading-order resolution")
+                        // Fallback: try to resolve via publication's reading order.
+                        // go(link) navigates by reading-order index; if that failed,
+                        // the link's href may not match reading order. Try finding a
+                        // reading-order link with the same href and navigate via go(locator).
+                        val pub = viewModel?.publication
+                        val readingOrderLink = pub?.readingOrder?.firstOrNull { it.href == command.link.href }
+                        if (readingOrderLink != null) {
+                            val locator = pub.locatorFromLink(readingOrderLink)
+                            if (locator != null) {
+                                navigator.go(locator)
+                            } else {
+                                android.util.Log.e("ReaderHost", "Cannot resolve locator from reading-order link: $href")
+                            }
+                        } else {
+                            android.util.Log.e("ReaderHost", "href not found in reading order: $href")
+                        }
+                    }
+                }
                 is ReaderCommand.RequestCurrentSelection -> {
                     val selection = navigator.currentSelection()
                     viewModel?.onSelectionRetrieved(selection)
@@ -306,6 +386,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                 is ReaderCommand.ClearSelection -> navigator.clearSelection()
                 // Phase 6 (TTS) commands
                 is ReaderCommand.ExtractSentences -> {
+                    Log.i("ReaderHost", "TTS: evaluating ExtractSentences JS")
                     navigator.evaluateJavascript(TtsJsScripts.EXTRACT_SENTENCES)
                 }
                 is ReaderCommand.ClearTtsHighlight -> {
@@ -323,8 +404,8 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
     // IMPORTANT: Only delegate to ViewModel methods (thread-safe StateFlow updates).
     // MUST NOT access Fragment views, requireContext(), or childFragmentManager.
 
-    override fun onAutoScrollStopped() {
-        viewModel?.onAutoScrollStopped()
+    override fun onCenterTap() {
+        viewModel?.onCenterTap()
     }
 
     override fun onSelectionChanged(text: String) {
@@ -333,6 +414,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
 
     // Phase 6 (TTS): BridgeCallback — called from WebView thread
     override fun onSentencesExtracted(json: String) {
+        Log.i("ReaderHost", "TTS: received sentences JSON, length=${json.length}")
         viewModel?.onSentencesExtracted(json)
     }
 
@@ -346,18 +428,6 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
             startActivity(intent)
         } catch (e: ActivityNotFoundException) {
             Log.w("ReaderHostFragment", "No browser app to open $url")
-        }
-    }
-
-    // -- Inner FragmentFactory for process-death safety (M5 from Phase 3) --
-
-    private inner class DefaultReaderFragmentFactory : FragmentFactory() {
-        override fun instantiate(classLoader: ClassLoader, className: String): Fragment {
-            if (className == EpubNavigatorFragment::class.java.name) {
-                @Suppress("DEPRECATION")
-                return EpubNavigatorFragment::class.java.getDeclaredConstructor().newInstance()
-            }
-            return super.instantiate(classLoader, className)
         }
     }
 }

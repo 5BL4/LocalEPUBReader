@@ -8,8 +8,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Notes
@@ -18,8 +22,8 @@ import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
@@ -29,6 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -48,6 +53,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidViewBinding
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -55,6 +62,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.epubreader.app.R
+import com.epubreader.app.data.prefs.ThemeMode
+import com.epubreader.app.core.tts.TtsPlaybackState
 import com.epubreader.app.databinding.FragmentReaderHostContainerBinding
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +96,9 @@ fun ReaderScreen(
     val sleepTimerState by viewModel.sleepTimerState.collectAsStateWithLifecycle()
     val ttsEngineState by viewModel.ttsEngineState.collectAsStateWithLifecycle()
     val ttsPlaybackState by viewModel.ttsPlaybackState.collectAsStateWithLifecycle()
+
+    // Reader settings state
+    val appPreferences by viewModel.appPreferences.collectAsStateWithLifecycle()
 
     // S1 (NEVER #12): derivedStateOf — bookmark icon only recomposes when
     // the derived boolean actually changes, not on every locator emission.
@@ -213,10 +225,12 @@ fun ReaderScreen(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = drawerState.isOpen,
         drawerContent = {
             TocDrawer(
                 items = uiState.toc,
                 onItemClick = { index ->
+                    android.util.Log.d("ReaderScreen", "TOC item clicked: index=$index, title=${uiState.toc.getOrNull(index)?.title}")
                     viewModel.navigateToTocItem(index)
                     scope.launch { drawerState.close() }
                 }
@@ -225,63 +239,107 @@ fun ReaderScreen(
     ) {
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = {
-                        Text(
-                            text = uiState.bookTitle
-                                ?: stringResource(R.string.reader_loading)
-                        )
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
+                if (uiState.isToolbarVisible) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        tonalElevation = 1.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = stringResource(R.string.action_back)
+                                contentDescription = stringResource(R.string.action_back),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                    },
-                    actions = {
-                        IconButton(onClick = { viewModel.toggleTocDrawer() }) {
+                        Text(
+                            text = uiState.bookTitle
+                                ?: stringResource(R.string.reader_loading),
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp)
+                        )
+                        IconButton(
+                            onClick = { viewModel.toggleTocDrawer() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
                                 Icons.Default.Menu,
-                                contentDescription = stringResource(R.string.reader_toc)
+                                contentDescription = stringResource(R.string.reader_toc),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        IconButton(onClick = { viewModel.toggleSearchPanel() }) {
+                        IconButton(
+                            onClick = { viewModel.toggleSearchPanel() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
                                 Icons.Default.Search,
-                                contentDescription = stringResource(R.string.reader_search)
+                                contentDescription = stringResource(R.string.reader_search),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        IconButton(onClick = { viewModel.toggleKnowledgePanel() }) {
+                        IconButton(
+                            onClick = { viewModel.toggleKnowledgePanel() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
                                 Icons.AutoMirrored.Filled.Notes,
-                                contentDescription = stringResource(R.string.reader_knowledge)
+                                contentDescription = stringResource(R.string.reader_knowledge),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        IconButton(onClick = { viewModel.toggleBookmark() }) {
+                        IconButton(
+                            onClick = { viewModel.toggleBookmark() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
                                 if (isBookmarked) Icons.Default.Bookmark
                                 else Icons.Default.BookmarkBorder,
-                                contentDescription = stringResource(R.string.reader_bookmark)
+                                contentDescription = stringResource(R.string.reader_bookmark),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        IconButton(onClick = { viewModel.toggleAutoScroll() }) {
+                        IconButton(
+                            onClick = { viewModel.toggleSettingsPanel() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
-                                if (uiState.isAutoScrollActive) Icons.Default.Pause
-                                else Icons.Default.PlayArrow,
-                                contentDescription = stringResource(R.string.reader_auto_scroll)
+                                Icons.Default.Settings,
+                                contentDescription = stringResource(R.string.reader_settings),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        // Phase 6: TTS icon
-                        IconButton(onClick = { viewModel.toggleTtsPanel() }) {
+                        // Phase 6: TTS icon — state-aware toggle
+                        IconButton(
+                            onClick = { viewModel.toggleTtsPlayback() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
                             Icon(
-                                Icons.Default.VolumeUp,
-                                contentDescription = stringResource(R.string.tts_panel_title)
+                                imageVector = when (ttsPlaybackState) {
+                                    is TtsPlaybackState.Playing -> Icons.Default.Pause
+                                    else -> Icons.Default.VolumeUp
+                                },
+                                contentDescription = stringResource(R.string.tts_panel_title),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
-                )
+                }
+                }
             },
             bottomBar = {
                 SelectionToolbar(
@@ -363,6 +421,29 @@ fun ReaderScreen(
             )
         }
 
+        // Settings panel overlay (ModalBottomSheet)
+        if (uiState.isSettingsPanelOpen) {
+            ReaderSettingsPanel(
+                fontSize = appPreferences.fontSize,
+                fontFamily = appPreferences.fontFamily,
+                theme = appPreferences.theme,
+                lineSpacing = appPreferences.lineSpacing,
+                paragraphSpacing = appPreferences.paragraphSpacing,
+                paragraphIndent = appPreferences.paragraphIndent,
+                pageMargins = appPreferences.pageMargins,
+                scroll = appPreferences.scroll,
+                onFontSizeChange = { viewModel.setFontSize(it) },
+                onFontFamilyChange = { viewModel.setFontFamily(it) },
+                onThemeChange = { viewModel.setTheme(it) },
+                onLineSpacingChange = { viewModel.setLineSpacing(it) },
+                onParagraphSpacingChange = { viewModel.setParagraphSpacing(it) },
+                onParagraphIndentChange = { viewModel.setParagraphIndent(it) },
+                onPageMarginsChange = { viewModel.setPageMargins(it) },
+                onScrollModeChange = { viewModel.setScrollMode(it) },
+                onDismiss = { viewModel.closeSettingsPanel() }
+            )
+        }
+
         // Note editor dialog — Phase 5 (Oracle M4: UI StateFlow driven)
         if (noteEditorState is NoteEditorState.Editing) {
             NoteEditorDialog(
@@ -377,7 +458,13 @@ fun ReaderScreen(
             TtsControlPanel(
                 panelState = ttsPanelState,
                 sleepTimerState = sleepTimerState,
-                onPlay = { viewModel.startTts() },
+                onPlay = {
+                    if (viewModel.ttsPlaybackState.value is TtsPlaybackState.Paused) {
+                        viewModel.resumeTts()
+                    } else {
+                        viewModel.startTts()
+                    }
+                },
                 onPause = { viewModel.pauseTts() },
                 onStop = { viewModel.stopTts() },
                 onSeekBackward = { viewModel.seekTtsBackward() },

@@ -7,15 +7,29 @@ import org.readium.r2.navigator.preferences.Color
 import org.readium.r2.navigator.preferences.FontFamily
 import org.readium.r2.navigator.preferences.Theme
 
-fun AppPreferences.toEpubPreferences(): EpubPreferences = EpubPreferences(
-    fontFamily = fontFamily.toFontFamily(),
-    fontSize = (fontSize / 16.0).coerceIn(0.5, 3.0),
-    lineHeight = lineSpacing.toDouble(),
-    backgroundColor = Color(backgroundColor),
-    textColor = null,
-    theme = theme.toReadiumTheme(),
-    scroll = true
-)
+fun AppPreferences.toEpubPreferences(): EpubPreferences {
+    // lineHeight, paragraphSpacing and paragraphIndent only take effect when
+    // publisher styles are disabled. Turn them off only when the user has
+    // customised paragraph typography, so the default rendering still respects
+    // the publisher's CSS.
+    val customTypography = lineSpacing != DEFAULT_LINE_SPACING ||
+        paragraphSpacing != 0f ||
+        paragraphIndent != 0f
+
+    return EpubPreferences(
+        fontFamily = fontFamily.toFontFamily(),
+        fontSize = (fontSize / 16.0).coerceIn(0.5, 3.0),
+        lineHeight = lineSpacing.toDouble(),
+        backgroundColor = Color(backgroundColor),
+        textColor = null,
+        theme = theme.toReadiumTheme(),
+        scroll = scroll,
+        paragraphSpacing = paragraphSpacing.toDouble(),
+        paragraphIndent = paragraphIndent.toDouble(),
+        pageMargins = pageMargins.toDouble(),
+        publisherStyles = if (customTypography) false else null
+    )
+}
 
 private fun String.toFontFamily(): FontFamily = when (this) {
     "serif" -> FontFamily.SERIF
@@ -28,3 +42,5 @@ private fun ThemeMode.toReadiumTheme(): Theme = when (this) {
     ThemeMode.DARK -> Theme.DARK
     ThemeMode.LIGHT, ThemeMode.SYSTEM -> Theme.LIGHT
 }
+
+private const val DEFAULT_LINE_SPACING = 1.4f

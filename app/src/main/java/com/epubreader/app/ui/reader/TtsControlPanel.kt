@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.epubreader.app.R
+import com.epubreader.app.core.tts.TtsPlaybackState
 
 /**
  * TTS control panel (ModalBottomSheet).
@@ -90,8 +91,8 @@ fun TtsControlPanel(
 
             Spacer(Modifier.height(16.dp))
 
-            // Sentence progress
-            if (panelState.totalSentences > 0 && panelState.currentSentence >= 0) {
+            // Show progress when playing or paused
+            if (panelState.totalSentences > 0 && (panelState.currentSentence >= 0 || panelState.playbackState is TtsPlaybackState.Paused)) {
                 Text(
                     text = "${panelState.currentSentence + 1} / ${panelState.totalSentences}",
                     style = MaterialTheme.typography.bodyMedium,
@@ -108,9 +109,10 @@ fun TtsControlPanel(
                 IconButton(onClick = onSeekBackward) {
                     Icon(Icons.Default.FastRewind, contentDescription = stringResource(R.string.tts_prev_sentence))
                 }
-                IconButton(onClick = { if (panelState.currentSentence >= 0) onPause() else onPlay() }) {
+                val isPlaying = panelState.playbackState is TtsPlaybackState.Playing
+                IconButton(onClick = { if (isPlaying) onPause() else onPlay() }) {
                     Icon(
-                        imageVector = if (panelState.currentSentence >= 0) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = stringResource(R.string.tts_play_pause)
                     )
                 }

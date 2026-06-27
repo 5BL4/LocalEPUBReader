@@ -20,6 +20,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -61,6 +62,11 @@ class TtsPlayer(
     private var currentSentenceIndex = -1
     private var chapterTitle: String = ""
     private var bookTitle: String = ""
+
+    // Tracked locally so getState() can build State without reading the
+    // inherited `state` property (which resolves to the overridden getState()
+    // and would recurse infinitely — see getState()).
+    private var playWhenReady = false
 
     // Audio focus (NEVER #11) — manual AudioManager approach for Media3 1.10.1
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -129,9 +135,17 @@ class TtsPlayer(
         // M2: Observe engine state — resume playback when engine becomes Ready
         playerScope.launch {
             ttsEngine.state.collect { engineState ->
-                if (engineState is TtsEngineState.Ready && state.playWhenReady) {
+                // Sync engine state to TtsBus so the UI layer can observe errors/language-missing
+                ttsBus.setEngineState(engineState)
+
+                if (engineState is TtsEngineState.Ready && playWhenReady) {
                     val sentences = ttsBus.sentences.value
                     if (sentences.isNotEmpty() && currentSentenceIndex >= 0) {
+                        val hasFocus = requestAudioFocus()
+                        if (!hasFocus) {
+                            Log.w(tag, "Audio focus denied on engine-ready resume — cannot start playback")
+                            return@collect
+                        }
                         speakCurrentSentence()
                         invalidateState()
                     }
@@ -150,7 +164,6 @@ class TtsPlayer(
         } else {
             0L
         }
-        val durationMs = sentenceCount * TtsPlaybackState_SENTENCE_MS
 
         val playlist = if (sentenceCount > 0) {
             listOf<MediaItemData>(
@@ -166,18 +179,24 @@ class TtsPlayer(
             emptyList<MediaItemData>()
         }
 
+        // Media3 contract: an empty playlist is only allowed in STATE_IDLE or
+        // STATE_ENDED, so force STATE_IDLE when no sentences are loaded.
         val playbackState = when {
-            currentSentenceIndex < 0 && !state.playWhenReady -> STATE_IDLE
-            currentSentenceIndex >= sentenceCount && sentenceCount > 0 -> STATE_ENDED
-            state.playWhenReady && ttsEngine.state.value is TtsEngineState.Ready -> STATE_READY
+            sentenceCount == 0 -> STATE_IDLE
+            currentSentenceIndex < 0 && !playWhenReady -> STATE_IDLE
+            currentSentenceIndex >= sentenceCount -> STATE_ENDED
+            playWhenReady && ttsEngine.state.value is TtsEngineState.Ready -> STATE_READY
             ttsEngine.state.value is TtsEngineState.Initializing -> STATE_BUFFERING
             else -> STATE_IDLE
         }
 
-        return state.buildUpon()
+        // Build from a fresh State.Builder() — do NOT call state.buildUpon(),
+        // because `state` resolves to this overridden getState() (virtual
+        // dispatch) and would recurse until StackOverflowError.
+        return State.Builder()
             .setAvailableCommands(buildAvailableCommands())
             .setPlayWhenReady(
-                state.playWhenReady,
+                playWhenReady,
                 Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
             )
             .setPlaybackState(playbackState)
@@ -204,6 +223,7 @@ class TtsPlayer(
             .build()
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        this.playWhenReady = playWhenReady
         if (playWhenReady) {
             startPlayback()
         } else {
@@ -231,6 +251,7 @@ class TtsPlayer(
             0
         }
         Log.i(tag, "handleSetMediaItems: ${sentences.size} sentences, startIdx=$currentSentenceIndex")
+        ttsBus.setCurrentSentenceIndex(currentSentenceIndex)
         invalidateState()
         return Futures.immediateVoidFuture()
     }
@@ -249,7 +270,7 @@ class TtsPlayer(
         currentSentenceIndex = targetIndex
         ttsBus.setCurrentSentenceIndex(targetIndex)
 
-        if (state.playWhenReady) {
+        if (playWhenReady) {
             speakCurrentSentence()
         }
         invalidateState()
@@ -273,6 +294,7 @@ class TtsPlayer(
 
     private fun startPlayback() {
         val engineState = ttsEngine.state.value
+        Log.d(tag, "startPlayback: engine=${engineState}, sentences=${ttsBus.sentences.value.size}, index=$currentSentenceIndex")
         if (engineState !is TtsEngineState.Ready) {
             Log.w(tag, "startPlayback: engine not ready ($engineState) — initializing")
             ttsEngine.initialize()
@@ -303,7 +325,7 @@ class TtsPlayer(
     }
 
     private fun resumePlayback() {
-        if (state.playWhenReady) {
+        if (playWhenReady) {
             speakCurrentSentence()
             invalidateState()
         }
@@ -324,6 +346,7 @@ class TtsPlayer(
             return
         }
         val sentence = sentences[currentSentenceIndex]
+        Log.d(tag, "speakCurrentSentence: index=$currentSentenceIndex, text='${sentence.text.take(50)}'")
         ttsBus.setCurrentSentenceIndex(currentSentenceIndex)
         ttsEngine.speak(sentence.text, "sentence_$currentSentenceIndex")
         Log.d(tag, "Speaking sentence $currentSentenceIndex/${sentences.size}")
@@ -344,8 +367,14 @@ class TtsPlayer(
             // Next sentence in same chapter
             currentSentenceIndex = nextIndex
             ttsBus.setCurrentSentenceIndex(nextIndex)
-            if (state.playWhenReady) {
-                speakCurrentSentence()
+            if (playWhenReady) {
+                // Small delay to let Fragment's navigator.go() settle after the
+                // sentence index update before starting the next utterance.
+                // Prevents race between navigation and the next speak call.
+                playerScope.launch {
+                    delay(80L)
+                    speakCurrentSentence()
+                }
             }
             invalidateState()
         } else {

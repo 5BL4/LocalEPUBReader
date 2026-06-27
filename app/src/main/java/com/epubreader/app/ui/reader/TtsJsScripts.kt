@@ -28,9 +28,11 @@ object TtsJsScripts {
      *
      * Returns JSON via `AndroidNativeApi.onSentencesExtracted(origin, json)`:
      * ```json
-     * [{"id":0,"text":"First sentence.","href":"chapter1.xhtml","progression":0.05}, ...]
+     * {"firstVisibleSentenceId": 5, "sentences": [{"id":0,"text":"...","href":"chapter1.xhtml","progression":0.05,"cssSelector":"p:nth-of-type(3)"}, ...]}
      * ```
      *
+     * - `firstVisibleSentenceId`: index of the sentence nearest the visible viewport (Fix A).
+     * - `cssSelector`: CSS path to the block element for precise navigation (Fix D).
      * - `href`: current chapter URL (from `window.location.pathname` basename).
      * - `progression`: element's vertical position / total scroll height (0.0-1.0).
      *
@@ -42,7 +44,7 @@ object TtsJsScripts {
     window.__epubTtsExtracting = true;
 
     var origin = window.location.origin;
-    var href = window.location.pathname.split('/').pop() || '';
+    var href = window.location.pathname;
     var scrollHeight = document.body.scrollHeight || 1;
 
     // Collect text nodes from block-level elements (skip script/style/img)
@@ -56,8 +58,9 @@ object TtsJsScripts {
     var splitRegex = /[^.!?。！？]+[.!?。！？]+["'"')\]]*\s*|[^.!?。！？]+$/g;
 
     blocks.forEach(function(block) {
-        // Skip hidden elements
-        if (block.offsetParent === null && block.style.display !== 'none') return;
+        // Skip hidden elements (getComputedStyle works reliably in CSS column layouts)
+        var cs = window.getComputedStyle(block);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return;
         // Skip elements inside script/style
         if (block.tagName === 'SCRIPT' || block.tagName === 'STYLE') return;
 
@@ -67,8 +70,59 @@ object TtsJsScripts {
         var matches = text.match(splitRegex);
         if (!matches) return;
 
-        var blockTop = block.getBoundingClientRect().top + window.scrollY;
-        var progression = Math.min(blockTop / scrollHeight, 1.0);
+        // Column-aware progression for paginated (CSS multi-column) layout.
+        // Falls back to scroll-based progression when columnCount is not available.
+        var bodyStyle = getComputedStyle(document.body);
+        var colCount = parseInt(bodyStyle.columnCount) || 1;
+        var bodyRect = document.body.getBoundingClientRect();
+        var blockRect = block.getBoundingClientRect();
+        var progression;
+        var colIndex = 0;
+        if (colCount > 1) {
+            // Map block's horizontal position to column index, then blend with
+            // vertical position within the column for a smooth progression.
+            // In CSS multi-column layout, bodyRect.height is the viewport height
+            // (single column height), not the total content height. The column
+            // height equals bodyRect.height for balanced columns.
+            var colWidth = bodyRect.width / colCount;
+            var blockCenterX = blockRect.left + blockRect.width / 2;
+            colIndex = Math.min(Math.max(Math.floor((blockCenterX - bodyRect.left) / colWidth), 0), colCount - 1);
+            // Column height = body height in balanced column layout
+            var colHeight = bodyRect.height;
+            var withinColFraction = (blockRect.top - bodyRect.top) / colHeight;
+            withinColFraction = Math.max(0, Math.min(1, withinColFraction));
+            progression = (colIndex + withinColFraction) / colCount;
+        } else {
+            progression = Math.min(
+                (blockRect.top + window.scrollY) / document.documentElement.scrollHeight,
+                1.0
+            );
+        }
+        progression = Math.max(0, Math.min(1, progression));
+
+        // Compute a CSS selector for this block element (Fix D)
+        var blockCssSelector = '';
+        try {
+            var el = block;
+            var path = [];
+            while (el && el !== document.body && el.parentElement) {
+                var tag = el.tagName.toLowerCase();
+                if (el.id) {
+                    path.unshift('#' + el.id);
+                    break;
+                }
+                var siblings = Array.prototype.filter.call(el.parentElement.children, function(c) {
+                    return c.tagName === el.tagName;
+                });
+                if (siblings.length > 1) {
+                    path.unshift(tag + ':nth-of-type(' + (siblings.indexOf(el) + 1) + ')');
+                } else {
+                    path.unshift(tag);
+                }
+                el = el.parentElement;
+            }
+            blockCssSelector = path.join(' > ');
+        } catch(e) { /* selector generation can fail on unusual DOM */ }
 
         matches.forEach(function(sentence) {
             var trimmed = sentence.trim();
@@ -85,18 +139,43 @@ object TtsJsScripts {
                 id: sentenceId,
                 text: trimmed,
                 href: href,
-                progression: parseFloat(progression.toFixed(4))
+                progression: parseFloat(progression.toFixed(4)),
+                cssSelector: blockCssSelector,
+                colIndex: colIndex
             });
             sentenceId++;
         });
     });
+
+    // Find the first sentence visible in the current viewport (Fix A)
+    // In CSS multi-column paginated layout, only one column is visible.
+    // A block is visible if its bounding rect overlaps the viewport.
+    var firstVisibleSentenceId = 0;
+    var vpWidth = window.innerWidth;
+    var vpHeight = window.innerHeight;
+    for (var i = 0; i < ranges.length; i++) {
+        var r = ranges[i];
+        if (r && r.block) {
+            var rect = r.block.getBoundingClientRect();
+            if (rect.right > 0 && rect.left < vpWidth &&
+                rect.bottom > 0 && rect.top < vpHeight) {
+                firstVisibleSentenceId = r.id;
+                break;
+            }
+        }
+    }
 
     // Store ranges globally for highlight/clear operations
     window.__epubTtsRanges = ranges;
     window.__epubTtsExtracting = false;
 
     if (window.AndroidNativeApi && sentences.length > 0) {
-        window.AndroidNativeApi.onSentencesExtracted(origin, JSON.stringify(sentences));
+        var payload = {
+            firstVisibleSentenceId: firstVisibleSentenceId,
+            colCount: colCount,
+            sentences: sentences
+        };
+        window.AndroidNativeApi.onSentencesExtracted(origin, JSON.stringify(payload));
     }
 })();
     """.trimIndent()
@@ -109,8 +188,9 @@ object TtsJsScripts {
      * Passes `window.location.origin` (NEVER #8).
      *
      * @param index The sentence index to highlight.
+     * @param color CSS background color for the highlight (e.g. "rgba(180,180,180,0.35)" or "#FFEB3B").
      */
-    fun highlightSentence(index: Int): String = """
+    fun highlightSentence(index: Int, color: String): String = """
 (function() {
     var origin = window.location.origin;
     // Clear previous highlight
@@ -127,24 +207,14 @@ object TtsJsScripts {
     var entry = ranges.find(function(r) { return r.id === $index; });
     if (!entry || !entry.range) return;
 
-    try {
-        var range = entry.range;
-        // Scroll the block into view
-        if (entry.block) {
-            entry.block.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-        // Wrap range in highlight span
-        var span = document.createElement('span');
-        span.className = '__epub_tts_highlight';
-        span.style.backgroundColor = '#FFEB3B';
-        span.style.color = '#000000';
-        range.surroundContents(span);
-    } catch(e) {
-        // surroundContents fails if range spans multiple elements
-        // Fallback: highlight the block element directly
-        if (entry.block) {
-            entry.block.style.backgroundColor = '#FFEB3B';
-        }
+    // Use CSS-only highlighting on the block element, not DOM mutation.
+    // range.surroundContents(span) triggers Chromium scroll anchoring
+    // which can pull the viewport unpredictably in paginated layout.
+    // The block-level approach is simpler and avoids this entirely.
+    if (entry.block) {
+        entry.block.style.backgroundColor = '$color';
+        entry.block.style.overflowAnchor = 'none';
+        entry.block.style.transition = 'background-color 0.15s ease';
     }
 })();
     """.trimIndent()

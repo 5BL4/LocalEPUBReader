@@ -32,3 +32,21 @@
 -keep class com.epubreader.app.media.TtsControllerImpl { *; }
 # TtsEngineState sealed class (reflection via sealed subtypes)
 -keep class com.epubreader.app.core.tts.** { *; }
+
+# Fragments referenced by android:name in layout XML (R8 does not scan layout XML).
+# Without this, FragmentManager's Class.forName() fails with ClassNotFoundException.
+-keep class com.epubreader.app.ui.reader.ReaderHostFragment { *; }
+
+# Navigation 2.8+ type-safe routes (kotlinx.serialization @Serializable).
+# The library ships consumer rules for $$serializer and Companion, but we add
+# explicit keeps for the route classes themselves to prevent class renaming
+# (Navigation looks up routes by KClass at runtime).
+-keep class com.epubreader.app.navigation.ReaderRoute { *; }
+-keep class com.epubreader.app.navigation.BookshelfRoute { *; }
+
+# ViewBinding generated classes (referenced from Compose AndroidViewBinding).
+-keep class com.epubreader.app.databinding.** { *; }
+
+# flexmark (HTML→Markdown converter, Phase 5) — not thread-safe, uses reflection.
+-keep class com.vladsch.flexmark.** { *; }
+-dontwarn com.vladsch.flexmark.**

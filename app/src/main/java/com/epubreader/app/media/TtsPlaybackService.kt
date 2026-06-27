@@ -69,6 +69,7 @@ class TtsPlaybackService : MediaSessionService() {
             .setChannelName(com.epubreader.app.R.string.tts_notification_channel_name)
             .setNotificationId(NOTIFICATION_ID)
             .build()
+        notificationProvider.setSmallIcon(com.epubreader.app.R.mipmap.ic_launcher)
 
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(
@@ -80,6 +81,9 @@ class TtsPlaybackService : MediaSessionService() {
                 )
             )
             .build()
+
+        // Attach the custom notification provider so the channel matches TTS_CHANNEL_ID
+        setMediaNotificationProvider(notificationProvider)
 
         // Observe player state for self-stop (Oracle S7)
         player.addListener(object : Player.Listener {

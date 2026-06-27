@@ -1,5 +1,6 @@
 package com.epubreader.app.ui.reader
 
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -69,7 +70,7 @@ class TtsJsScriptsTest {
 
     @Test
     fun `highlightSentence contains highlight class`() {
-        val script = TtsJsScripts.highlightSentence(0)
+        val script = TtsJsScripts.highlightSentence(0, "rgba(180,180,180,0.35)")
         assertTrue(
             script.contains("__epub_tts_highlight"),
             "highlightSentence must use __epub_tts_highlight CSS class"
@@ -78,7 +79,7 @@ class TtsJsScriptsTest {
 
     @Test
     fun `highlightSentence uses index parameter`() {
-        val script = TtsJsScripts.highlightSentence(5)
+        val script = TtsJsScripts.highlightSentence(5, "rgba(180,180,180,0.35)")
         assertTrue(
             script.contains("5"),
             "highlightSentence must embed the index parameter (5) in the JS snippet"
@@ -103,11 +104,59 @@ class TtsJsScriptsTest {
     }
 
     @Test
-    fun `highlightSentence scrolls block into view`() {
-        val script = TtsJsScripts.highlightSentence(0)
-        assertTrue(
+    fun `highlightSentence does NOT scroll into view`() {
+        val script = TtsJsScripts.highlightSentence(0, "rgba(180,180,180,0.35)")
+        assertFalse(
             script.contains("scrollIntoView"),
-            "highlightSentence must scroll the target block into view"
+            "highlightSentence must NOT scroll into view (causes pagination shift in Readium CSS-column layout)"
+        )
+    }
+
+    @Test
+    fun `EXTRACT_SENTENCES includes firstVisibleSentenceId in payload`() {
+        assertTrue(
+            TtsJsScripts.EXTRACT_SENTENCES.contains("firstVisibleSentenceId"),
+            "Extract sentences script must compute firstVisibleSentenceId (Fix A)"
+        )
+    }
+
+    @Test
+    fun `EXTRACT_SENTENCES includes cssSelector in sentence objects`() {
+        assertTrue(
+            TtsJsScripts.EXTRACT_SENTENCES.contains("cssSelector"),
+            "Extract sentences script must include cssSelector per sentence (Fix D)"
+        )
+    }
+
+    @Test
+    fun `EXTRACT_SENTENCES uses object payload not bare array`() {
+        assertTrue(
+            TtsJsScripts.EXTRACT_SENTENCES.contains("payload"),
+            "Extract sentences script must use object payload with firstVisibleSentenceId + sentences"
+        )
+    }
+
+    @Test
+    fun `EXTRACT_SENTENCES includes colIndex in sentence objects`() {
+        assertTrue(
+            TtsJsScripts.EXTRACT_SENTENCES.contains("colIndex"),
+            "Extract sentences script must include colIndex per sentence for page-boundary gating"
+        )
+    }
+
+    @Test
+    fun `EXTRACT_SENTENCES declares colIndex before column count branch`() {
+        assertTrue(
+            TtsJsScripts.EXTRACT_SENTENCES.contains("var colIndex = 0"),
+            "Extract sentences script must declare colIndex with a default before the if/else branch"
+        )
+    }
+
+    @Test
+    fun `EXTRACT_SENTENCES includes colCount in payload`() {
+        assertTrue(
+            TtsJsScripts.EXTRACT_SENTENCES.contains("colCount"),
+            "Extract sentences script must include colCount in payload for scroll/paginated mode detection"
         )
     }
 }

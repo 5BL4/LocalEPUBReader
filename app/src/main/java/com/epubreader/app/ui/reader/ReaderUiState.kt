@@ -13,6 +13,7 @@ data class ReaderUiState(
     val toc: PersistentList<TocItem> = persistentListOf(),
     val isTocDrawerOpen: Boolean = false,
     val isSearchPanelOpen: Boolean = false,
-    val isAutoScrollActive: Boolean = false,
+    val isToolbarVisible: Boolean = false,
+    val isSettingsPanelOpen: Boolean = false,
     val isKnowledgePanelOpen: Boolean = false
 )

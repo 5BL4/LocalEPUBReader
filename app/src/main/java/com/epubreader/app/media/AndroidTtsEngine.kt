@@ -2,6 +2,7 @@ package com.epubreader.app.media
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
 import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -61,6 +62,12 @@ class AndroidTtsEngine(
     private var speechRate: Float = 1.0f
     private var pitch: Float = 1.0f
 
+    /** Tracks which engine we're currently probing. */
+    private var engineProbeIndex = 0
+
+    /** Cached list of installed engines. */
+    private var engineList: List<TextToSpeech.EngineInfo> = emptyList()
+
     /** Watchdog job — started on speak(), cancelled on onStart(). */
     private var watchdogJob: Job? = null
 
@@ -80,64 +87,91 @@ class AndroidTtsEngine(
         }
 
         _state.value = TtsEngineState.Initializing
-        Log.i(tag, "Initializing TTS engine${enginePackage?.let { " ($it)" } ?: ""}")
 
-        tts?.shutdown()
-        tts = if (enginePackage != null) {
-            TextToSpeech(context, initListener, enginePackage)
-        } else {
-            TextToSpeech(context, initListener)
-        }
-    }
+        // Discover engines using default TTS — create one real async instance
+        // (avoids the sync TextToSpeech(context, null) probe which can corrupt
+        // the TTS service connection on some devices)
+        engineProbeIndex = 0
+        tts = TextToSpeech(context, { status ->
+            scope.launch {
+                if (status == TextToSpeech.SUCCESS) {
+                    engineList = tts!!.engines  // get engines from the live instance
+                    Log.i(tag, "Found ${engineList.size} installed TTS engine(s)")
 
-    private val initListener = TextToSpeech.OnInitListener { status ->
-        scope.launch {
-            if (status == TextToSpeech.SUCCESS) {
-                checkLanguageSupport()
-            } else {
-                Log.e(tag, "TTS init failed: status=$status")
-                _state.value = TtsEngineState.Error("TTS initialization failed: $status")
+                    if (engineList.isEmpty()) {
+                        _state.value = TtsEngineState.Error("No TTS engine installed")
+                        return@launch
+                    }
+
+                    // Check if current (default) engine supports a usable language
+                    checkLanguageSupport(engineList[0])
+                } else {
+                    _state.value = TtsEngineState.Error("Failed to initialize default TTS engine")
+                }
             }
-        }
+        })  // no engine name = default engine
     }
 
-    private fun checkLanguageSupport() {
-        val tts = this.tts ?: run {
-            _state.value = TtsEngineState.Error("TTS engine is null after init")
+    private fun probeNextEngine() {
+        if (engineProbeIndex >= engineList.size) {
+            // All engines probed, none support a usable language
+            Log.w(tag, "No engine supports a usable language among ${engineList.size} installed engines")
+            _state.value = TtsEngineState.LanguageMissing(Locale.getDefault().toLanguageTag())
             return
         }
 
-        val locale = Locale.getDefault()
-        val langResult = tts.isLanguageAvailable(locale)
-        Log.i(tag, "Language check for $locale: result=$langResult")
+        val engineInfo = engineList[engineProbeIndex]
+        Log.i(tag, "Probing engine ${engineProbeIndex + 1}/${engineList.size}: ${engineInfo.label} (${engineInfo.name})")
 
-        when (langResult) {
-            TextToSpeech.LANG_MISSING_DATA -> {
-                _state.value = TtsEngineState.LanguageMissing(locale.toLanguageTag())
-            }
-            TextToSpeech.LANG_NOT_SUPPORTED -> {
-                // Try English as fallback
-                val fallback = Locale.ENGLISH
-                val fallbackResult = tts.isLanguageAvailable(fallback)
-                if (fallbackResult >= TextToSpeech.LANG_AVAILABLE) {
-                    tts.language = fallback
-                    applyParams()
-                    _state.value = TtsEngineState.Ready
-                    Log.i(tag, "Using fallback language: $fallback")
+        tts?.shutdown()
+        tts = TextToSpeech(context, { status ->
+            scope.launch {
+                if (status == TextToSpeech.SUCCESS) {
+                    checkLanguageSupport(engineInfo)
                 } else {
-                    _state.value = TtsEngineState.LanguageMissing(locale.toLanguageTag())
+                    Log.w(tag, "Engine ${engineInfo.label} init failed: status=$status — trying next")
+                    engineProbeIndex++
+                    probeNextEngine()
                 }
             }
-            else -> {
-                // LANG_AVAILABLE, LANG_COUNTRY_AVAILABLE, LANG_COUNTRY_VAR_AVAILABLE
+        }, engineInfo.name)
+    }
+
+    private fun checkLanguageSupport(engineInfo: TextToSpeech.EngineInfo) {
+        val tts = this.tts ?: run {
+            engineProbeIndex++
+            probeNextEngine()
+            return
+        }
+
+        // Prefer Chinese when available; fall back to device default, then English
+        val localesToTry = listOf(
+            Locale.SIMPLIFIED_CHINESE,
+            Locale.CHINESE,
+            Locale.getDefault(),
+            Locale.ENGLISH
+        ).distinct()  // avoid duplicate probes when device default IS one of the above
+
+        for (locale in localesToTry) {
+            val result = tts.isLanguageAvailable(locale)
+            Log.i(tag, "Engine ${engineInfo.label}: isLanguageAvailable($locale) = $result")
+            if (result >= TextToSpeech.LANG_AVAILABLE) {
                 tts.language = locale
+                configureAudioAttributes()
                 applyParams()
+                tts.setOnUtteranceProgressListener(utteranceListener)
                 _state.value = TtsEngineState.Ready
-                Log.i(tag, "TTS engine ready, language: $locale")
+                Log.i(tag, "Selected engine: ${engineInfo.label} (${engineInfo.name}), language: $locale")
+                return
             }
         }
 
-        tts.setOnUtteranceProgressListener(utteranceListener)
+        // This engine doesn't support a usable language — try next
+        Log.i(tag, "Engine ${engineInfo.label} does not support a usable language — trying next")
+        tts.shutdown()
+        this.tts = null
+        engineProbeIndex++
+        probeNextEngine()
     }
 
     override fun speak(text: String, utteranceId: String) {
@@ -189,6 +223,8 @@ class AndroidTtsEngine(
         tts?.stop()
         tts?.shutdown()
         tts = null
+        engineProbeIndex = 0
+        engineList = emptyList()
         _state.value = TtsEngineState.Uninitialized
         Log.i(tag, "TTS engine shut down")
     }
@@ -270,6 +306,15 @@ class AndroidTtsEngine(
     private fun applyParams() {
         tts?.setSpeechRate(speechRate)
         tts?.setPitch(pitch)
+    }
+
+    private fun configureAudioAttributes() {
+        val tts = this.tts ?: return
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        tts.setAudioAttributes(attrs)
     }
 
     /** Council S11: splits text into chunks <= [maxLen] at word boundaries. */

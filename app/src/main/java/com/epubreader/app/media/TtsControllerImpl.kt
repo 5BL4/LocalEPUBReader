@@ -97,15 +97,16 @@ class TtsControllerImpl @Inject constructor(
                         attachListener(controller)
                         Log.i(tag, "MediaController connected")
 
-                        // Oracle S4: apply saved speed/pitch
+                        // Oracle S4: apply saved speed/pitch (use pending values
+                        // in case setSpeed/setPitch was called during async connect)
                         controller.setPlaybackParameters(
-                            PlaybackParameters(ttsRate, ttsPitch)
+                            PlaybackParameters(pendingRate, pendingPitch)
                         )
 
                         // Oracle S8: replay pending play request
                         pendingPlay?.let { req ->
                             pendingPlay = null
-                            play(req.sentences, req.chapterTitle, req.bookTitle)
+                            play(req.sentences, req.chapterTitle, req.bookTitle, req.startIndex)
                         }
                     } catch (e: Exception) {
                         Log.e(tag, "Failed to connect MediaController", e)
@@ -147,12 +148,12 @@ class TtsControllerImpl @Inject constructor(
         })
     }
 
-    override fun play(sentences: List<TtsSentence>, chapterTitle: String, bookTitle: String) {
+    override fun play(sentences: List<TtsSentence>, chapterTitle: String, bookTitle: String, startIndex: Int) {
         val controller = mediaController
         if (controller == null) {
             // Oracle S8: queue the request
             Log.w(tag, "play() called before connected — queuing request")
-            pendingPlay = PendingPlayRequest(sentences, chapterTitle, bookTitle)
+            pendingPlay = PendingPlayRequest(sentences, chapterTitle, bookTitle, startIndex)
             return
         }
 
@@ -173,14 +174,20 @@ class TtsControllerImpl @Inject constructor(
             )
             .build()
 
-        controller.setMediaItem(mediaItem)
-        controller.prepare()
+        // Fix A: pass startPositionMs so TtsPlayer.handleSetMediaItems starts at the
+        // viewport-nearest sentence instead of always index 0.
+        val startPositionMs = startIndex.toLong() * TtsController.SENTENCE_DURATION_MS
+        controller.setMediaItem(mediaItem, startPositionMs)
         controller.play()
-        Log.i(tag, "play() — ${sentences.size} sentences, chapter='$chapterTitle'")
+        Log.i(tag, "play() — ${sentences.size} sentences, chapter='$chapterTitle', startIndex=$startIndex")
     }
 
     override fun pause() {
         mediaController?.pause() ?: Log.w(tag, "pause() called but not connected — dropping")
+    }
+
+    override fun resume() {
+        mediaController?.play() ?: Log.w(tag, "resume() called but not connected — dropping")
     }
 
     override fun stop() {
@@ -238,7 +245,8 @@ class TtsControllerImpl @Inject constructor(
     private data class PendingPlayRequest(
         val sentences: List<TtsSentence>,
         val chapterTitle: String,
-        val bookTitle: String
+        val bookTitle: String,
+        val startIndex: Int = 0
     )
 
     companion object {

@@ -28,7 +28,26 @@
     <string name="reader_bookmark">Bookmark</string>
     <string name="reader_bookmark_added">Bookmark added</string>
     <string name="reader_bookmark_removed">Bookmark removed</string>
-    <string name="reader_auto_scroll">Auto-scroll</string>
+    <!-- Reader settings -->
+    <string name="reader_settings">Settings</string>
+    <string name="reader_settings_title">Reading Settings</string>
+    <string name="reader_settings_font">Font</string>
+    <string name="reader_settings_font_size">Font size</string>
+    <string name="reader_settings_font_family_sans">Sans-serif</string>
+    <string name="reader_settings_font_family_serif">Serif</string>
+    <string name="reader_settings_theme">Background</string>
+    <string name="reader_settings_theme_light">Light</string>
+    <string name="reader_settings_theme_dark">Dark</string>
+    <string name="reader_settings_theme_sepia">Sepia</string>
+    <string name="reader_settings_theme_system">System</string>
+    <string name="reader_settings_layout">Layout</string>
+    <string name="reader_settings_line_spacing">Line spacing</string>
+    <string name="reader_settings_paragraph_spacing">Paragraph spacing</string>
+    <string name="reader_settings_paragraph_indent">Paragraph indent</string>
+    <string name="reader_settings_page_margins">Page margins</string>
+    <string name="reader_settings_page_turn">Page turn</string>
+    <string name="reader_settings_pagination">Paginated</string>
+    <string name="reader_settings_scroll">Scroll</string>
     <string name="reader_selection_highlight">Highlight</string>
     <string name="reader_selection_bookmark">Bookmark selection</string>
     <string name="reader_selection_copy">Copy</string>

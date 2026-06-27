@@ -24,14 +24,14 @@ class AndroidNativeApiTest {
     }
 
     @Test
-    fun `allowed origin readium_package invokes onAutoScrollStopped callback`() {
+    fun `allowed origin readium_package invokes onCenterTap callback`() {
         var called = false
         holder.callback = object : BridgeCallback {
-            override fun onAutoScrollStopped() { called = true }
+            override fun onCenterTap() { called = true }
             override fun onSelectionChanged(text: String) {}
             override fun onSentencesExtracted(json: String) {}
         }
-        api.onAutoScrollStopped("https://readium_package")
+        api.onCenterTap("https://readium_package")
         assertTrue(called)
     }
 
@@ -39,7 +39,7 @@ class AndroidNativeApiTest {
     fun `allowed origin readium_assets invokes onSelectionChanged callback`() {
         var receivedText = ""
         holder.callback = object : BridgeCallback {
-            override fun onAutoScrollStopped() {}
+            override fun onCenterTap() {}
             override fun onSelectionChanged(text: String) { receivedText = text }
             override fun onSentencesExtracted(json: String) {}
         }
@@ -48,14 +48,14 @@ class AndroidNativeApiTest {
     }
 
     @Test
-    fun `blocked origin evil does not invoke onAutoScrollStopped callback`() {
+    fun `blocked origin evil does not invoke onCenterTap callback`() {
         var called = false
         holder.callback = object : BridgeCallback {
-            override fun onAutoScrollStopped() { called = true }
+            override fun onCenterTap() { called = true }
             override fun onSelectionChanged(text: String) {}
             override fun onSentencesExtracted(json: String) {}
         }
-        api.onAutoScrollStopped("https://evil.com")
+        api.onCenterTap("https://evil.com")
         assertFalse(called)
     }
 
@@ -63,7 +63,7 @@ class AndroidNativeApiTest {
     fun `blocked origin does not invoke onSelectionChanged callback`() {
         var called = false
         holder.callback = object : BridgeCallback {
-            override fun onAutoScrollStopped() {}
+            override fun onCenterTap() {}
             override fun onSelectionChanged(text: String) { called = true }
             override fun onSentencesExtracted(json: String) {}
         }
@@ -75,7 +75,7 @@ class AndroidNativeApiTest {
     fun `null callback does not crash`() {
         holder.callback = null
         // Should not throw NullPointerException
-        api.onAutoScrollStopped("https://readium_package")
+        api.onCenterTap("https://readium_package")
         api.onSelectionChanged("https://readium_package", "test")
     }
 
@@ -92,7 +92,7 @@ class AndroidNativeApiTest {
     fun `allowed origin invokes onSentencesExtracted callback`() {
         var receivedJson = ""
         holder.callback = object : BridgeCallback {
-            override fun onAutoScrollStopped() {}
+            override fun onCenterTap() {}
             override fun onSelectionChanged(text: String) {}
             override fun onSentencesExtracted(json: String) { receivedJson = json }
         }
@@ -105,7 +105,7 @@ class AndroidNativeApiTest {
     fun `blocked origin does not invoke onSentencesExtracted callback`() {
         var called = false
         holder.callback = object : BridgeCallback {
-            override fun onAutoScrollStopped() {}
+            override fun onCenterTap() {}
             override fun onSelectionChanged(text: String) {}
             override fun onSentencesExtracted(json: String) { called = true }
         }
