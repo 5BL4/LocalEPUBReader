@@ -6,7 +6,7 @@ import android.media.AudioAttributes
 import android.os.Build
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.util.Log
+import com.epubreader.app.core.log.AppLogger
 import com.epubreader.app.core.tts.TtsEngine
 import com.epubreader.app.core.tts.TtsEngineState
 import kotlinx.coroutines.CoroutineScope
@@ -82,7 +82,7 @@ class AndroidTtsEngine(
         if (_state.value is TtsEngineState.Initializing ||
             _state.value is TtsEngineState.Ready
         ) {
-            Log.d(tag, "initialize() called but already initializing/ready — skipping")
+            AppLogger.d(tag, "initialize() called but already initializing/ready — skipping")
             return
         }
 
@@ -96,7 +96,7 @@ class AndroidTtsEngine(
             scope.launch {
                 if (status == TextToSpeech.SUCCESS) {
                     engineList = tts!!.engines  // get engines from the live instance
-                    Log.i(tag, "Found ${engineList.size} installed TTS engine(s)")
+                    AppLogger.i(tag, "Found ${engineList.size} installed TTS engine(s)")
 
                     if (engineList.isEmpty()) {
                         _state.value = TtsEngineState.Error("No TTS engine installed")
@@ -115,13 +115,13 @@ class AndroidTtsEngine(
     private fun probeNextEngine() {
         if (engineProbeIndex >= engineList.size) {
             // All engines probed, none support a usable language
-            Log.w(tag, "No engine supports a usable language among ${engineList.size} installed engines")
+            AppLogger.w(tag, "No engine supports a usable language among ${engineList.size} installed engines")
             _state.value = TtsEngineState.LanguageMissing(Locale.getDefault().toLanguageTag())
             return
         }
 
         val engineInfo = engineList[engineProbeIndex]
-        Log.i(tag, "Probing engine ${engineProbeIndex + 1}/${engineList.size}: ${engineInfo.label} (${engineInfo.name})")
+        AppLogger.i(tag, "Probing engine ${engineProbeIndex + 1}/${engineList.size}: ${engineInfo.label} (${engineInfo.name})")
 
         tts?.shutdown()
         tts = TextToSpeech(context, { status ->
@@ -129,7 +129,7 @@ class AndroidTtsEngine(
                 if (status == TextToSpeech.SUCCESS) {
                     checkLanguageSupport(engineInfo)
                 } else {
-                    Log.w(tag, "Engine ${engineInfo.label} init failed: status=$status — trying next")
+                    AppLogger.w(tag, "Engine ${engineInfo.label} init failed: status=$status — trying next")
                     engineProbeIndex++
                     probeNextEngine()
                 }
@@ -154,20 +154,20 @@ class AndroidTtsEngine(
 
         for (locale in localesToTry) {
             val result = tts.isLanguageAvailable(locale)
-            Log.i(tag, "Engine ${engineInfo.label}: isLanguageAvailable($locale) = $result")
+            AppLogger.i(tag, "Engine ${engineInfo.label}: isLanguageAvailable($locale) = $result")
             if (result >= TextToSpeech.LANG_AVAILABLE) {
                 tts.language = locale
                 configureAudioAttributes()
                 applyParams()
                 tts.setOnUtteranceProgressListener(utteranceListener)
                 _state.value = TtsEngineState.Ready
-                Log.i(tag, "Selected engine: ${engineInfo.label} (${engineInfo.name}), language: $locale")
+                AppLogger.i(tag, "Selected engine: ${engineInfo.label} (${engineInfo.name}), language: $locale")
                 return
             }
         }
 
         // This engine doesn't support a usable language — try next
-        Log.i(tag, "Engine ${engineInfo.label} does not support a usable language — trying next")
+        AppLogger.i(tag, "Engine ${engineInfo.label} does not support a usable language — trying next")
         tts.shutdown()
         this.tts = null
         engineProbeIndex++
@@ -177,12 +177,12 @@ class AndroidTtsEngine(
     override fun speak(text: String, utteranceId: String) {
         val currentState = _state.value
         if (currentState !is TtsEngineState.Ready) {
-            Log.w(tag, "speak() called in state $currentState — dropping (NEVER #28)")
+            AppLogger.w(tag, "speak() called in state $currentState — dropping (NEVER #28)")
             return
         }
 
         val tts = this.tts ?: run {
-            Log.w(tag, "speak() called but TTS is null")
+            AppLogger.w(tag, "speak() called but TTS is null")
             return
         }
 
@@ -192,7 +192,7 @@ class AndroidTtsEngine(
             val chunkId = if (chunks.size > 1) "${utteranceId}_chunk$i" else utteranceId
             val result = tts.speak(chunk, TextToSpeech.QUEUE_ADD, null, chunkId)
             if (result != TextToSpeech.SUCCESS) {
-                Log.e(tag, "tts.speak() returned $result for $chunkId")
+                AppLogger.e(tag, "tts.speak() returned $result for $chunkId")
             }
         }
 
@@ -203,19 +203,19 @@ class AndroidTtsEngine(
     override fun stop() {
         watchdogJob?.cancel()
         tts?.stop()
-        Log.d(tag, "TTS stopped")
+        AppLogger.d(tag, "TTS stopped")
     }
 
     override fun setSpeechRate(rate: Float) {
         speechRate = rate.coerceIn(0.1f, 4.0f)
         tts?.setSpeechRate(speechRate)
-        Log.d(tag, "Speech rate set to $speechRate")
+        AppLogger.d(tag, "Speech rate set to $speechRate")
     }
 
     override fun setPitch(pitch: Float) {
         this.pitch = pitch.coerceIn(0.1f, 4.0f)
         tts?.setPitch(this.pitch)
-        Log.d(tag, "Pitch set to ${this.pitch}")
+        AppLogger.d(tag, "Pitch set to ${this.pitch}")
     }
 
     override fun shutdown() {
@@ -226,7 +226,7 @@ class AndroidTtsEngine(
         engineProbeIndex = 0
         engineList = emptyList()
         _state.value = TtsEngineState.Uninitialized
-        Log.i(tag, "TTS engine shut down")
+        AppLogger.i(tag, "TTS engine shut down")
     }
 
     // -- Watchdog (Council M13) --
@@ -236,7 +236,7 @@ class AndroidTtsEngine(
         watchdogJob = scope.launch {
             delay(TtsEngine.WATCHDOG_TIMEOUT_MS)
             // onStart was not received in time — native TTS likely crashed
-            Log.e(tag, "Watchdog timeout for $utteranceId — forcing reinit")
+            AppLogger.e(tag, "Watchdog timeout for $utteranceId — forcing reinit")
             _state.value = TtsEngineState.Error("Watchdog timeout: TTS engine unresponsive")
             shutdown()
             delay(500) // brief cooldown before reinit
@@ -255,14 +255,14 @@ class AndroidTtsEngine(
         override fun onStart(utteranceId: String?) {
             scope.launch {
                 cancelWatchdog()
-                Log.d(tag, "onStart: $utteranceId")
+                AppLogger.d(tag, "onStart: $utteranceId")
                 callbacks?.onStart(utteranceId ?: "")
             }
         }
 
         override fun onDone(utteranceId: String?) {
             scope.launch {
-                Log.d(tag, "onDone: $utteranceId")
+                AppLogger.d(tag, "onDone: $utteranceId")
                 callbacks?.onDone(utteranceId ?: "")
             }
         }
@@ -270,7 +270,7 @@ class AndroidTtsEngine(
         @Deprecated("Deprecated in Java", ReplaceWith("onError(utteranceId, 0)"))
         override fun onError(utteranceId: String?) {
             scope.launch {
-                Log.e(tag, "onError: $utteranceId")
+                AppLogger.e(tag, "onError: $utteranceId")
                 _state.value = TtsEngineState.Error("Utterance error: $utteranceId")
                 callbacks?.onError(utteranceId ?: "")
             }
@@ -278,7 +278,7 @@ class AndroidTtsEngine(
 
         override fun onError(utteranceId: String?, errorCode: Int) {
             scope.launch {
-                Log.e(tag, "onError: $utteranceId code=$errorCode")
+                AppLogger.e(tag, "onError: $utteranceId code=$errorCode")
                 _state.value = TtsEngineState.Error("Utterance error: $utteranceId (code=$errorCode)")
                 callbacks?.onError(utteranceId ?: "")
             }
@@ -287,7 +287,7 @@ class AndroidTtsEngine(
         override fun onStop(utteranceId: String?, interrupted: Boolean) {
             scope.launch {
                 cancelWatchdog()
-                Log.d(tag, "onStop: $utteranceId interrupted=$interrupted")
+                AppLogger.d(tag, "onStop: $utteranceId interrupted=$interrupted")
             }
         }
 
@@ -295,7 +295,7 @@ class AndroidTtsEngine(
         override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 scope.launch {
-                    Log.v(tag, "onRangeStart: $utteranceId [$start-$end]")
+                    AppLogger.v(tag, "onRangeStart: $utteranceId [$start-$end]")
                 }
             }
         }

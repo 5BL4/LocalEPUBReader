@@ -4,7 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.util.Log
+import com.epubreader.app.core.log.AppLogger
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -53,7 +53,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
     // so an uncaught exception would propagate to Thread.uncaughtExceptionHandler
     // and crash the app. This handler logs and swallows non-cancellation exceptions.
     private val collectorExceptionHandler = CoroutineExceptionHandler { _, throwable ->
-        Log.e("ReaderHostFragment", "Uncaught exception in navigator collector", throwable)
+        AppLogger.e("ReaderHostFragment", "Uncaught exception in navigator collector", throwable)
     }
 
     /**
@@ -122,7 +122,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e("ReaderHostFragment", "setupNavigator failed in onViewCreated", e)
+                AppLogger.e("ReaderHostFragment", "setupNavigator failed in onViewCreated", e)
             }
         }
         if (viewModel != null) {
@@ -155,7 +155,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: Exception) {
-                                Log.e("ReaderHostFragment", "setupNavigator failed", e)
+                                AppLogger.e("ReaderHostFragment", "setupNavigator failed", e)
                             }
                         }
                     }
@@ -231,6 +231,13 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                 // M6: Re-inject JS scripts on resource (href) change.
                 // evaluateJavascript only affects the current resource's WebView;
                 // navigating to a new chapter creates a new WebView without our scripts.
+                //
+                // Bug fix: On the first chapter, currentLocator emits before the WebView
+                // is ready (currentReflowablePageFragment is null → evaluateJavascript
+                // returns null). When onPageLoaded re-emits the same href,
+                // distinctUntilChanged filters it out, so the listener is never installed.
+                // A bounded retry loop bridges this gap. Scripts are idempotent (safe to
+                // re-inject via window.__epub* guards).
                 launch {
                     navigator.currentLocator
                         .map { it.href.toString() }
@@ -238,26 +245,14 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                         .collect { href ->
                             // Phase 6 (M7): Notify VM of chapter change
                             viewModel?.onChapterChanged(href)
-                            try {
-                                navigator.evaluateJavascript(ReaderJsScripts.SELECTION_LISTENER)
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                Log.e("ReaderHostFragment", "Failed to inject selection listener", e)
-                            }
-                            try {
-                                navigator.evaluateJavascript(ReaderJsScripts.CENTER_TAP_LISTENER)
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (e: Exception) {
-                                Log.e("ReaderHostFragment", "Failed to inject center-tap listener", e)
-                            }
+                            injectJsWithRetry(navigator, ReaderJsScripts.SELECTION_LISTENER, "selection listener")
+                            injectJsWithRetry(navigator, ReaderJsScripts.CENTER_TAP_LISTENER, "center-tap listener")
                         }
                 }
                 // M7: Commands collector — only after navigator is confirmed ready.
                 // With M1's buffer, commands emitted during the gap are held and delivered here.
                 launch {
-                    android.util.Log.d("ReaderHost", "Commands collector started")
+                    AppLogger.d("ReaderHost", "Commands collector started")
                     viewModel?.commands?.collect { command ->
                         handleCommand(navigator, command)
                     }
@@ -271,7 +266,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
-                            Log.e("ReaderHostFragment", "Failed to apply highlight decorations", e)
+                            AppLogger.e("ReaderHostFragment", "Failed to apply highlight decorations", e)
                         }
                     }
                 }
@@ -332,19 +327,53 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                                         }
                                     }
                                     // Highlight is UNCONDITIONAL — every sentence gets highlighted
-                                    navigator.evaluateJavascript(
+                                    val highlightResult = navigator.evaluateJavascript(
                                         TtsJsScripts.highlightSentence(triple.first, triple.second)
                                     )
+                                    AppLogger.d("ReaderHost", "TTS highlight: idx=${triple.first}, result=$highlightResult")
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (e: Exception) {
-                                    Log.e("ReaderHostFragment", "TTS highlight/nav failed", e)
+                                    AppLogger.e("ReaderHostFragment", "TTS highlight/nav failed", e)
                                 }
                             }
                         }
                 }
             }
         }
+    }
+
+    /**
+     * Injects JavaScript with bounded retry. evaluateJavascript returns null when the
+     * WebView page fragment isn't attached yet (first chapter race). Once the fragment
+     * exists, awaitLoaded() suspends until the page is loaded, then the script runs.
+     *
+     * Scripts are idempotent (check window.__epub* flags), so re-injection is safe.
+     */
+    private suspend fun injectJsWithRetry(
+        navigator: EpubNavigatorFragment,
+        script: String,
+        label: String
+    ): Boolean {
+        repeat(5) { attempt ->
+            try {
+                val result = navigator.evaluateJavascript(script)
+                if (result != null) {
+                    // Script executed — WebView was ready (result is "null" string for
+                    // undefined-returning IIFEs, but non-null means it ran)
+                    return true
+                }
+                // result is null — page fragment not attached yet
+                if (attempt < 4) delay(200)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLogger.d("ReaderHostFragment", "$label attempt ${attempt + 1} failed", e)
+                if (attempt < 4) delay(200)
+            }
+        }
+        AppLogger.w("ReaderHostFragment", "$label: WebView not ready after 5 retries")
+        return false
     }
 
     // M5 (NEVER #26): Wrap each command in try-catch to prevent crashes
@@ -354,10 +383,10 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                 is ReaderCommand.NavigateToLocator -> navigator.go(command.locator)
                 is ReaderCommand.NavigateToLink -> {
                     val href = command.link.href
-                    android.util.Log.d("ReaderHost", "handleCommand NavigateToLink href=$href")
+                    AppLogger.d("ReaderHost", "handleCommand NavigateToLink href=$href")
                     val success = navigator.go(command.link)
                     if (!success) {
-                        android.util.Log.w("ReaderHost", "NavigateToLink failed for href=$href, trying reading-order resolution")
+                        AppLogger.w("ReaderHost", "NavigateToLink failed for href=$href, trying reading-order resolution")
                         // Fallback: try to resolve via publication's reading order.
                         // go(link) navigates by reading-order index; if that failed,
                         // the link's href may not match reading order. Try finding a
@@ -369,10 +398,10 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                             if (locator != null) {
                                 navigator.go(locator)
                             } else {
-                                android.util.Log.e("ReaderHost", "Cannot resolve locator from reading-order link: $href")
+                                AppLogger.e("ReaderHost", "Cannot resolve locator from reading-order link: $href")
                             }
                         } else {
-                            android.util.Log.e("ReaderHost", "href not found in reading order: $href")
+                            AppLogger.e("ReaderHost", "href not found in reading order: $href")
                         }
                     }
                 }
@@ -386,17 +415,24 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                 is ReaderCommand.ClearSelection -> navigator.clearSelection()
                 // Phase 6 (TTS) commands
                 is ReaderCommand.ExtractSentences -> {
-                    Log.i("ReaderHost", "TTS: evaluating ExtractSentences JS")
-                    navigator.evaluateJavascript(TtsJsScripts.EXTRACT_SENTENCES)
+                    AppLogger.i("ReaderHost", "TTS: evaluating ExtractSentences JS")
+                    val ok = injectJsWithRetry(navigator, TtsJsScripts.EXTRACT_SENTENCES, "extract sentences")
+                    if (!ok) {
+                        AppLogger.e("ReaderHost", "TTS: ExtractSentences injection failed after retries")
+                        viewModel?.onSentencesExtracted("{\"error\":\"WebView not ready after retries\",\"sentences\":[]}")
+                    }
                 }
                 is ReaderCommand.ClearTtsHighlight -> {
                     navigator.evaluateJavascript(TtsJsScripts.CLEAR_TTS_HIGHLIGHT)
+                }
+                is ReaderCommand.RequestFirstVisibleBlock -> {
+                    navigator.evaluateJavascript(BookmarkJsScripts.GET_FIRST_VISIBLE_BLOCK)
                 }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e("ReaderHostFragment", "Command failed: $command", e)
+            AppLogger.e("ReaderHostFragment", "Command failed: $command", e)
         }
     }
 
@@ -414,8 +450,13 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
 
     // Phase 6 (TTS): BridgeCallback — called from WebView thread
     override fun onSentencesExtracted(json: String) {
-        Log.i("ReaderHost", "TTS: received sentences JSON, length=${json.length}")
+        AppLogger.i("ReaderHost", "TTS: received sentences JSON, length=${json.length}")
         viewModel?.onSentencesExtracted(json)
+    }
+
+    override fun onFirstVisibleBlock(json: String) {
+        AppLogger.d("ReaderHost", "Bookmark: onFirstVisibleBlock received, json length=${json.length}")
+        viewModel?.onFirstVisibleBlock(json)
     }
 
     // -- EpubNavigatorFragment.Listener --
@@ -427,7 +468,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url.toString()))
             startActivity(intent)
         } catch (e: ActivityNotFoundException) {
-            Log.w("ReaderHostFragment", "No browser app to open $url")
+            AppLogger.w("ReaderHostFragment", "No browser app to open $url")
         }
     }
 }

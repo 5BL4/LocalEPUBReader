@@ -2,7 +2,7 @@ package com.epubreader.app.media
 
 import android.content.ComponentName
 import android.content.Context
-import android.util.Log
+import com.epubreader.app.core.log.AppLogger
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
@@ -74,7 +74,7 @@ class TtsControllerImpl @Inject constructor(
 
     override fun connect(ttsRate: Float, ttsPitch: Float) {
         if (_isConnected.value || controllerFuture != null) {
-            Log.d(tag, "connect() called but already connected/connecting — skipping")
+            AppLogger.d(tag, "connect() called but already connected/connecting — skipping")
             return
         }
 
@@ -95,7 +95,7 @@ class TtsControllerImpl @Inject constructor(
                         mediaController = controller
                         _isConnected.value = true
                         attachListener(controller)
-                        Log.i(tag, "MediaController connected")
+                        AppLogger.i(tag, "MediaController connected")
 
                         // Oracle S4: apply saved speed/pitch (use pending values
                         // in case setSpeed/setPitch was called during async connect)
@@ -109,7 +109,7 @@ class TtsControllerImpl @Inject constructor(
                             play(req.sentences, req.chapterTitle, req.bookTitle, req.startIndex)
                         }
                     } catch (e: Exception) {
-                        Log.e(tag, "Failed to connect MediaController", e)
+                        AppLogger.e(tag, "Failed to connect MediaController", e)
                         _isConnected.value = false
                     }
                 }, ContextCompat_mainExecutor(context))
@@ -129,7 +129,7 @@ class TtsControllerImpl @Inject constructor(
                     Player.STATE_ENDED -> TtsPlaybackState.Ended
                     else -> TtsPlaybackState.Idle
                 }
-                Log.d(tag, "Playback state → ${_playbackState.value}")
+                AppLogger.d(tag, "Playback state → ${_playbackState.value}")
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -141,7 +141,7 @@ class TtsControllerImpl @Inject constructor(
 
             override fun onPlayerErrorChanged(error: androidx.media3.common.PlaybackException?) {
                 if (error != null) {
-                    Log.e(tag, "Player error", error)
+                    AppLogger.e(tag, "Player error", error)
                     _playbackState.value = TtsPlaybackState.Idle
                 }
             }
@@ -152,7 +152,7 @@ class TtsControllerImpl @Inject constructor(
         val controller = mediaController
         if (controller == null) {
             // Oracle S8: queue the request
-            Log.w(tag, "play() called before connected — queuing request")
+            AppLogger.w(tag, "play() called before connected — queuing request")
             pendingPlay = PendingPlayRequest(sentences, chapterTitle, bookTitle, startIndex)
             return
         }
@@ -161,7 +161,7 @@ class TtsControllerImpl @Inject constructor(
         val genId = java.util.UUID.randomUUID().toString()
         ttsBus.setSentences(sentences)
         ttsBus.setGenerationId(genId)
-        ttsBus.setCurrentSentenceIndex(-1)
+        ttsBus.setCurrentSentenceIndex(startIndex)
 
         // Council M9: 1 MediaItem = 1 chapter
         val mediaItem = androidx.media3.common.MediaItem.Builder()
@@ -179,15 +179,15 @@ class TtsControllerImpl @Inject constructor(
         val startPositionMs = startIndex.toLong() * TtsController.SENTENCE_DURATION_MS
         controller.setMediaItem(mediaItem, startPositionMs)
         controller.play()
-        Log.i(tag, "play() — ${sentences.size} sentences, chapter='$chapterTitle', startIndex=$startIndex")
+        AppLogger.i(tag, "play() — ${sentences.size} sentences, chapter='$chapterTitle', startIndex=$startIndex")
     }
 
     override fun pause() {
-        mediaController?.pause() ?: Log.w(tag, "pause() called but not connected — dropping")
+        mediaController?.pause() ?: AppLogger.w(tag, "pause() called but not connected — dropping")
     }
 
     override fun resume() {
-        mediaController?.play() ?: Log.w(tag, "resume() called but not connected — dropping")
+        mediaController?.play() ?: AppLogger.w(tag, "resume() called but not connected — dropping")
     }
 
     override fun stop() {
@@ -198,7 +198,7 @@ class TtsControllerImpl @Inject constructor(
         }
         ttsBus.clear()
         _playbackState.value = TtsPlaybackState.Idle
-        Log.i(tag, "stop() — TtsBus cleared, playback stopped")
+        AppLogger.i(tag, "stop() — TtsBus cleared, playback stopped")
     }
 
     override fun setSpeed(rate: Float) {
@@ -220,7 +220,7 @@ class TtsControllerImpl @Inject constructor(
 
     override fun seekToSentence(index: Int) {
         val controller = mediaController ?: run {
-            Log.w(tag, "seekToSentence() called but not connected — dropping")
+            AppLogger.w(tag, "seekToSentence() called but not connected — dropping")
             return
         }
         controller.seekTo(index * TtsController.SENTENCE_DURATION_MS)
@@ -239,7 +239,7 @@ class TtsControllerImpl @Inject constructor(
             MediaController.releaseFuture(future)
         }
         controllerFuture = null
-        Log.i(tag, "disconnect() — MediaController released (playback continues in background)")
+        AppLogger.i(tag, "disconnect() — MediaController released (playback continues in background)")
     }
 
     private data class PendingPlayRequest(

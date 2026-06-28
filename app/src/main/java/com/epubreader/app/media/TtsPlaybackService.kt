@@ -3,7 +3,7 @@ package com.epubreader.app.media
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
-import android.util.Log
+import com.epubreader.app.core.log.AppLogger
 import androidx.core.content.ContextCompat
 import androidx.media3.common.Player
 import androidx.media3.session.DefaultMediaNotificationProvider
@@ -89,7 +89,7 @@ class TtsPlaybackService : MediaSessionService() {
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
-                    Log.i(tag, "Playback ended — checking for self-stop")
+                    AppLogger.i(tag, "Playback ended — checking for self-stop")
                     maybeStopSelf()
                 }
             }
@@ -108,7 +108,7 @@ class TtsPlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
-        Log.i(tag, "onDestroy — releasing session")
+        AppLogger.i(tag, "onDestroy — releasing session")
         mediaSession?.run {
             player.release()
             release()
@@ -127,7 +127,7 @@ class TtsPlaybackService : MediaSessionService() {
         val session = mediaSession ?: return
         val connectedControllers = session.connectedControllers
         if (connectedControllers.isEmpty()) {
-            Log.i(tag, "No controllers connected and playback ended — stopping self")
+            AppLogger.i(tag, "No controllers connected and playback ended — stopping self")
             stopSelf()
         }
     }
@@ -144,7 +144,7 @@ class TtsPlaybackService : MediaSessionService() {
             }
             val manager = ContextCompat.getSystemService(this, NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
-            Log.d(tag, "Notification channel created: ${EpubReaderApplication.TTS_CHANNEL_ID}")
+            AppLogger.d(tag, "Notification channel created: ${EpubReaderApplication.TTS_CHANNEL_ID}")
         }
     }
 

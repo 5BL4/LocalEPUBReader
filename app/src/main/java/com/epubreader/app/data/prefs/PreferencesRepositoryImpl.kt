@@ -18,7 +18,7 @@ class PreferencesRepositoryImpl @Inject constructor(
             fontSize = p[PreferenceKeys.FONT_SIZE] ?: 16f,
             fontFamily = p[PreferenceKeys.FONT_FAMILY] ?: "sans-serif",
             lineSpacing = p[PreferenceKeys.LINE_SPACING] ?: 1.4f,
-            theme = p[PreferenceKeys.THEME]?.let { runCatching { ThemeMode.valueOf(it) }.getOrDefault(ThemeMode.SYSTEM) } ?: ThemeMode.SYSTEM,
+            theme = p[PreferenceKeys.THEME]?.let { runCatching { ThemeMode.valueOf(it) }.getOrDefault(ThemeMode.SEPIA) } ?: ThemeMode.SEPIA,
             backgroundColor = p[PreferenceKeys.BACKGROUND_COLOR] ?: 0xFFFFFFFF.toInt(),
             paragraphSpacing = p[PreferenceKeys.PARAGRAPH_SPACING] ?: 0f,
             paragraphIndent = p[PreferenceKeys.PARAGRAPH_INDENT] ?: 0f,

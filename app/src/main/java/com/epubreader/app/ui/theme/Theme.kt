@@ -7,7 +7,7 @@ import com.epubreader.app.data.prefs.ThemeMode
 
 @Composable
 fun EpubReaderTheme(
-    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    themeMode: ThemeMode = ThemeMode.SEPIA,
     content: @Composable () -> Unit
 ) {
     val systemDark = isSystemInDarkTheme()

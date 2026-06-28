@@ -28,4 +28,7 @@ sealed interface ReaderCommand {
 
     /** Clears all TTS highlights from the current WebView. */
     object ClearTtsHighlight : ReaderCommand
+
+    /** Requests the first visible block element for paragraph-level bookmark anchoring. */
+    object RequestFirstVisibleBlock : ReaderCommand
 }

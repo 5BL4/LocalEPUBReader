@@ -37,8 +37,11 @@ google-services.json
 # Android Profiling
 *.hprof
 
-# Deepwork session state (orchestrator-only)
-.slim/deepwork/
+# Deepwork / opencode tool state (orchestrator-only)
+.slim/
+
+# Readium source snapshot (clonedeps for local inspection)
+org/
 
 # Kotlin
 .kotlin/

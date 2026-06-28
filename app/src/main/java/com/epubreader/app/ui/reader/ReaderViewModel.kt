@@ -1,6 +1,8 @@
 package com.epubreader.app.ui.reader
 
-import android.util.Log
+import android.content.Context
+import android.content.res.Configuration
+import com.epubreader.app.core.log.AppLogger
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -38,6 +40,7 @@ import com.epubreader.app.domain.repository.NoteRepository
 import com.epubreader.app.domain.repository.ReadingProgressRepository
 import com.epubreader.app.navigation.ReaderRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -86,6 +89,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
+    @ApplicationContext private val applicationContext: Context,
     private val bookRepository: BookRepository,
     private val readingProgressRepository: ReadingProgressRepository,
     private val bookmarkRepository: BookmarkRepository,
@@ -115,11 +119,20 @@ class ReaderViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
+    // System dark mode state — initialized from current configuration, updated
+    // from the Composable layer when the system theme changes at runtime.
+    private val _isSystemDark = MutableStateFlow(applicationContext.isSystemDarkMode())
+    val isSystemDark: StateFlow<Boolean> = _isSystemDark.asStateFlow()
+
     // M2 (NEVER #12): currentLocator is high-frequency (emits on every scroll).
     // Isolated in its own StateFlow so ReaderScreen's top-level recomposition
     // is not triggered on every locator change.
     private val _currentLocator = MutableStateFlow<Locator?>(null)
     val currentLocator: StateFlow<Locator?> = _currentLocator.asStateFlow()
+
+    /** Absolute path to the EPUB file on disk, for sharing. */
+    private val _bookFilePath = MutableStateFlow<String?>(null)
+    val bookFilePath: StateFlow<String?> = _bookFilePath.asStateFlow()
 
     private val _navigatorFactory = MutableStateFlow<EpubNavigatorFactory?>(null)
     val navigatorFactory: StateFlow<EpubNavigatorFactory?> = _navigatorFactory.asStateFlow()
@@ -132,17 +145,13 @@ class ReaderViewModel @Inject constructor(
     private val _selectionState = MutableStateFlow(SelectionState())
     val selectionState: StateFlow<SelectionState> = _selectionState.asStateFlow()
 
-    // Phase 4: Bookmarks observed from DB
-    val bookmarks: StateFlow<List<BookmarkEntity>> = bookmarkRepository
-        .observeBookmarks(bookUuid)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
     // S-E: Pre-computed set of bookmarked hrefs to avoid JSON parsing on every scroll.
     val bookmarkedHrefs: StateFlow<Set<String>> = bookmarkRepository
         .observeBookmarks(bookUuid)
         .map { list ->
             list.filter { !it.isDeleted }
                 .mapNotNull { it.locator.toLocator()?.href?.toString() }
+                .map { normalizeHref(it) }
                 .toSet()
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
@@ -292,14 +301,17 @@ class ReaderViewModel @Inject constructor(
     internal var publication: Publication? = null
         private set
 
-    /** Derived EpubPreferences from preferences repository flow. */
-    val epubPreferences: StateFlow<EpubPreferences> = preferencesRepository.preferences
-        .map { it.toEpubPreferences() }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = AppPreferences().toEpubPreferences()
-        )
+    /** Derived EpubPreferences from preferences repository flow + system dark mode. */
+    val epubPreferences: StateFlow<EpubPreferences> = combine(
+        preferencesRepository.preferences,
+        _isSystemDark
+    ) { prefs, systemDark ->
+        prefs.toEpubPreferences(systemDark)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = AppPreferences().toEpubPreferences(applicationContext.isSystemDarkMode())
+    )
 
     /** Raw app preferences (for the settings panel UI). */
     val appPreferences: StateFlow<AppPreferences> = preferencesRepository.preferences
@@ -322,6 +334,10 @@ class ReaderViewModel @Inject constructor(
 
     private var saveJob: Job? = null
     private var searchJob: Job? = null
+
+    @Volatile
+    private var pendingBookmarkToggle = false
+    private var bookmarkToggleTimeoutJob: Job? = null
 
     // S1: Store current TTS sentences for progress saving
     private var currentSentences: List<TtsSentence> = emptyList()
@@ -469,6 +485,8 @@ class ReaderViewModel @Inject constructor(
                         return@withContext
                     }
 
+                    _bookFilePath.value = book.filePath
+
                     val asset = assetRetriever.retrieve(file = file)
                         .getOrElse {
                             _uiState.update {
@@ -507,11 +525,11 @@ class ReaderViewModel @Inject constructor(
 
                     // Phase 4: Load TOC
                     loadToc(pub)
-                    android.util.Log.d("ReaderVM", "TOC loaded: ${tocLinks.size} entries, tocItems=${_uiState.value.toc.size}")
+                    AppLogger.d("ReaderVM", "TOC loaded: ${tocLinks.size} entries, tocItems=${_uiState.value.toc.size}")
 
                     // Build EpubNavigatorFactory
                     val factory = EpubNavigatorFactory(pub)
-                    android.util.Log.d("ReaderVM", "EpubNavigatorFactory created, initialPrefs scroll=${epubPreferences.value.scroll}")
+                    AppLogger.d("ReaderVM", "EpubNavigatorFactory created, initialPrefs scroll=${epubPreferences.value.scroll}")
 
                     _navigatorFactory.value = factory
                     _uiState.update {
@@ -570,9 +588,9 @@ class ReaderViewModel @Inject constructor(
 
     fun navigateToTocItem(index: Int) {
         val link = tocLinks.getOrNull(index) ?: return
-        android.util.Log.d("ReaderVM", "navigateToTocItem index=$index link=${link.href}")
+        AppLogger.d("ReaderVM", "navigateToTocItem index=$index link=${link.href}")
         _commands.tryEmit(ReaderCommand.NavigateToLink(link))
-        android.util.Log.d("ReaderVM", "navigateToTocItem emitted NavigateToLink")
+        AppLogger.d("ReaderVM", "navigateToTocItem emitted NavigateToLink")
         closeTocDrawer()
         hideToolbar()
     }
@@ -585,7 +603,8 @@ class ReaderViewModel @Inject constructor(
             it.copy(
                 isSearchPanelOpen = !it.isSearchPanelOpen,
                 // Oracle S3: close knowledge panel when opening search panel
-                isKnowledgePanelOpen = if (!willClose) false else it.isKnowledgePanelOpen
+                isKnowledgePanelOpen = if (!willClose) false else it.isKnowledgePanelOpen,
+                isProgressPanelOpen = if (!willClose) false else it.isProgressPanelOpen
             )
         }
         // S-C: Clear search decorations when closing via toggle icon
@@ -794,11 +813,16 @@ class ReaderViewModel @Inject constructor(
             }
             SelectionAction.Bookmark -> {
                 viewModelScope.launch(exceptionHandler.handler) {
+                    val bookmarkLocator = locator.copy(
+                        locations = locator.locations.copy(
+                            otherLocations = locator.locations.otherLocations + ("kind" to "selection")
+                        )
+                    )
                     val result = bookmarkRepository.addBookmark(
                         BookmarkEntity(
                             uuid = UUID.randomUUID().toString(),
                             bookUuid = bookUuid,
-                            locator = locator.toJsonString(),
+                            locator = bookmarkLocator.toJsonString(),
                             label = text.take(50),
                             createdAt = now,
                             updatedAt = now,
@@ -897,40 +921,193 @@ class ReaderViewModel @Inject constructor(
         pendingNoteText = ""
     }
 
-    // -- Phase 4: Bookmark (chapter-level toggle) --
+    // -- Phase 4: Bookmark (paragraph-level via JS with synchronous fallback) --
 
+    /**
+     * Toggles a bookmark at the first visible paragraph on the current screen.
+     *
+     * Flow:
+     * 1. Emits [ReaderCommand.RequestFirstVisibleBlock] to get the paragraph text
+     *    and CSS selector from the WebView via JS.
+     * 2. If JS responds within 2 seconds: creates a paragraph-level bookmark
+     *    with the paragraph text as label and cssSelector for precise matching.
+     * 3. If JS times out (WebView not ready, blank page): falls back to
+     *    [currentLocator] with progression-based matching.
+     *
+     * Toggle-delete matches by href + cssSelector (primary) or href + rounded
+     * progression (fallback), so deletion works regardless of which path
+     * created the bookmark.
+     */
     fun toggleBookmark() {
-        val locator = _currentLocator.value ?: return
-        val currentHref = locator.href.toString()
-        val now = System.currentTimeMillis()
-
-        // Check if current page (href) is already bookmarked
-        val existing = bookmarks.value.find { bookmark ->
-            !bookmark.isDeleted && bookmark.locator.toLocator()?.href?.toString() == currentHref
+        if (pendingBookmarkToggle) {
+            AppLogger.d("ReaderVM", "Bookmark: toggle already in progress, ignoring")
+            return
         }
+        pendingBookmarkToggle = true
+        AppLogger.d("ReaderVM", "Bookmark: toggle requested, emitting RequestFirstVisibleBlock")
+        _commands.tryEmit(ReaderCommand.RequestFirstVisibleBlock)
 
-        if (existing != null) {
-            viewModelScope.launch(exceptionHandler.handler) {
-                bookmarkRepository.softDeleteBookmark(existing.uuid)
-            }
-        } else {
-            viewModelScope.launch(exceptionHandler.handler) {
-                bookmarkRepository.addBookmark(
-                    BookmarkEntity(
-                        uuid = UUID.randomUUID().toString(),
-                        bookUuid = bookUuid,
-                        locator = locator.toJsonString(),
-                        label = locator.title,
-                        createdAt = now,
-                        updatedAt = now,
-                        isDeleted = false
-                    )
-                )
+        // Safety: fall back to currentLocator if JS doesn't respond in 2 seconds
+        bookmarkToggleTimeoutJob?.cancel()
+        bookmarkToggleTimeoutJob = viewModelScope.launch(exceptionHandler.handler) {
+            delay(2000L)
+            if (pendingBookmarkToggle) {
+                pendingBookmarkToggle = false
+                AppLogger.w("ReaderVM", "Bookmark: JS timeout — falling back to currentLocator")
+                toggleBookmarkInternal(null)
             }
         }
     }
 
+    /**
+     * Called from Fragment (BridgeCallback) when JS finds the first visible
+     * block element. Completes the bookmark toggle using the paragraph info.
+     */
+    fun onFirstVisibleBlock(json: String) {
+        AppLogger.d("ReaderVM", "Bookmark: onFirstVisibleBlock called, json length=${json.length}")
+        if (!pendingBookmarkToggle) {
+            AppLogger.d("ReaderVM", "Bookmark: no pending toggle, ignoring callback")
+            return
+        }
+        pendingBookmarkToggle = false
+        bookmarkToggleTimeoutJob?.cancel()
+
+        viewModelScope.launch(exceptionHandler.handler) {
+            val block = parseFirstVisibleBlock(json)
+            AppLogger.d("ReaderVM", "Bookmark: parsed block = $block")
+            toggleBookmarkInternal(block)
+        }
+    }
+
+    /**
+     * Core toggle logic shared by both the JS path and the fallback path.
+     *
+     * @param block Parsed first-visible-block from JS, or null for fallback.
+     */
+    private suspend fun toggleBookmarkInternal(block: FirstVisibleBlock?) {
+        val locator = _currentLocator.value ?: run {
+            AppLogger.w("ReaderVM", "Bookmark: currentLocator is null, cannot toggle")
+            return
+        }
+        val currentHref = normalizeHref(block?.href ?: locator.href.toString())
+        val now = System.currentTimeMillis()
+
+        // Determine matching criteria and label from JS result or fallback
+        val cssSelector: String? = block?.cssSelector
+        val progression = block?.progression ?: locator.locations.progression ?: 0.0
+        val roundedProgression = Math.round(progression * 100.0) / 100.0
+        val label = block?.text?.takeIf { it.isNotBlank() }?.take(50)
+            ?: locator.text.highlight?.takeIf { it.isNotBlank() }?.take(50)
+            ?: locator.title
+
+        AppLogger.d("ReaderVM", "Bookmark: toggleInternal href=$currentHref css=$cssSelector prog=$roundedProgression label=$label")
+
+        // Build the bookmark locator — use buildLocator if we have cssSelector, else currentLocator
+        val baseLocator = if (cssSelector != null) {
+            val pub = publication
+            if (pub != null) {
+                buildLocator(pub, block!!.href, progression, cssSelector, block.text.take(50))
+                    ?: locator
+            } else {
+                locator
+            }
+        } else {
+            locator
+        }
+
+        val bookmarkLocator = baseLocator.copy(
+            locations = baseLocator.locations.copy(
+                otherLocations = baseLocator.locations.otherLocations + ("kind" to "paragraph")
+            )
+        )
+
+        // Find existing bookmark: match by href + cssSelector (primary) or href + progression (fallback)
+        val allBookmarks = bookmarkRepository.getByBook(bookUuid).getOrNull() ?: emptyList()
+        val existing = allBookmarks.find { bookmark ->
+            if (bookmark.isDeleted) return@find false
+            val loc = bookmark.locator.toLocator() ?: return@find false
+            val kind = loc.locations.otherLocations["kind"]?.toString() ?: "chapter"
+            if (kind == "selection") return@find false
+            val bmHref = normalizeHref(loc.href.toString())
+            if (bmHref != currentHref) {
+                AppLogger.d("ReaderVM", "Bookmark: href mismatch — bookmark=$bmHref vs current=$currentHref")
+                return@find false
+            }
+
+            // Primary match: cssSelector (use toString() for type-safe comparison after JSON round-trip)
+            if (cssSelector != null) {
+                val bmCssRaw = loc.locations.otherLocations["cssSelector"]
+                val bmCss = bmCssRaw?.toString()
+                if (bmCss == cssSelector) {
+                    AppLogger.d("ReaderVM", "Bookmark: matched by cssSelector ($bmCss)")
+                    return@find true
+                }
+                AppLogger.d("ReaderVM", "Bookmark: cssSelector mismatch — bookmark=$bmCss vs current=$cssSelector")
+            }
+
+            // Fallback match: rounded progression
+            val bmProgression = loc.locations.progression ?: 0.0
+            val bmRounded = Math.round(bmProgression * 100.0) / 100.0
+            if (bmRounded == roundedProgression) {
+                AppLogger.d("ReaderVM", "Bookmark: matched by progression ($bmRounded)")
+                return@find true
+            }
+            AppLogger.d("ReaderVM", "Bookmark: progression mismatch — bookmark=$bmRounded vs current=$roundedProgression")
+            false
+        }
+
+        if (existing != null) {
+            AppLogger.d("ReaderVM", "Bookmark: deleting existing bookmark ${existing.uuid}")
+            bookmarkRepository.softDeleteBookmark(existing.uuid)
+        } else {
+            AppLogger.d("ReaderVM", "Bookmark: creating new bookmark")
+            bookmarkRepository.addBookmark(
+                BookmarkEntity(
+                    uuid = UUID.randomUUID().toString(),
+                    bookUuid = bookUuid,
+                    locator = bookmarkLocator.toJsonString(),
+                    label = label,
+                    createdAt = now,
+                    updatedAt = now,
+                    isDeleted = false
+                )
+            )
+        }
+    }
+
+    /** Parses the JSON from GET_FIRST_VISIBLE_BLOCK JS. */
+    private fun parseFirstVisibleBlock(json: String): FirstVisibleBlock? {
+        if (json.isBlank()) return null
+        return try {
+            val obj = JSONObject(json)
+            FirstVisibleBlock(
+                text = obj.optString("text", ""),
+                cssSelector = obj.optString("cssSelector", "").ifBlank { null },
+                href = obj.optString("href", ""),
+                progression = obj.optDouble("progression", 0.0)
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLogger.w("ReaderVM", "Bookmark: failed to parse first visible block JSON", e)
+            null
+        }
+    }
+
+    /** Parsed result from GET_FIRST_VISIBLE_BLOCK JS. */
+    private data class FirstVisibleBlock(
+        val text: String,
+        val cssSelector: String?,
+        val href: String,
+        val progression: Double
+    )
+
     // -- Toolbar & Settings --
+
+    /** Updates the system dark mode state (called from the Composable layer). */
+    fun setSystemDarkMode(value: Boolean) {
+        _isSystemDark.value = value
+    }
 
     /** Toggles the top toolbar visibility (called on center-area tap). */
     fun toggleToolbar() {
@@ -948,13 +1125,30 @@ class ReaderViewModel @Inject constructor(
             it.copy(
                 isSettingsPanelOpen = willOpen,
                 isSearchPanelOpen = if (willOpen) false else it.isSearchPanelOpen,
-                isKnowledgePanelOpen = if (willOpen) false else it.isKnowledgePanelOpen
+                isKnowledgePanelOpen = if (willOpen) false else it.isKnowledgePanelOpen,
+                isProgressPanelOpen = if (willOpen) false else it.isProgressPanelOpen
             )
         }
     }
 
     fun closeSettingsPanel() {
         _uiState.update { it.copy(isSettingsPanelOpen = false) }
+    }
+
+    fun toggleProgressPanel() {
+        val willOpen = !_uiState.value.isProgressPanelOpen
+        _uiState.update {
+            it.copy(
+                isProgressPanelOpen = willOpen,
+                isSearchPanelOpen = if (willOpen) false else it.isSearchPanelOpen,
+                isSettingsPanelOpen = if (willOpen) false else it.isSettingsPanelOpen,
+                isKnowledgePanelOpen = if (willOpen) false else it.isKnowledgePanelOpen
+            )
+        }
+    }
+
+    fun closeProgressPanel() {
+        _uiState.update { it.copy(isProgressPanelOpen = false) }
     }
 
     /**
@@ -970,6 +1164,7 @@ class ReaderViewModel @Inject constructor(
         if (_uiState.value.isSearchPanelOpen ||
             _uiState.value.isKnowledgePanelOpen ||
             _uiState.value.isSettingsPanelOpen ||
+            _uiState.value.isProgressPanelOpen ||
             _ttsPanelState.value.isPanelOpen
         ) {
             return
@@ -1037,7 +1232,8 @@ class ReaderViewModel @Inject constructor(
             it.copy(
                 isKnowledgePanelOpen = willOpen,
                 // Oracle S3: close search panel when opening knowledge panel
-                isSearchPanelOpen = if (willOpen) false else it.isSearchPanelOpen
+                isSearchPanelOpen = if (willOpen) false else it.isSearchPanelOpen,
+                isProgressPanelOpen = if (willOpen) false else it.isProgressPanelOpen
             )
         }
         if (willOpen && searchWasOpen) {
@@ -1134,13 +1330,17 @@ class ReaderViewModel @Inject constructor(
     /** Matches a locator JSON href to TOC chapter title (Oracle M2: fragment normalization). */
     private fun findChapterTitle(locatorJson: String?): String? {
         if (locatorJson == null) return null
-        val locator = locatorJson.toLocator() ?: return null
-        val href = locator.href.toString().substringBefore('#').substringBefore('?').trimEnd('/')
-        val link = tocLinks.find {
-            it.href.toString().substringBefore('#').substringBefore('?').trimEnd('/') == href
-        }
+        // Try as Locator JSON first (entity locator fields are JSON);
+        // fall back to treating the string as a plain href (e.g., currentChapterHref).
+        val href = locatorJson.toLocator()?.href?.toString()?.let { normalizeHref(it) }
+            ?: normalizeHref(locatorJson)
+        val link = tocLinks.find { normalizeHref(it.href.toString()) == href }
         return link?.title
     }
+
+    /** Normalizes an href by stripping fragments, query params, and leading/trailing slashes for stable comparison. */
+    private fun normalizeHref(href: String): String =
+        href.substringBefore('#').substringBefore('?').trim('/').lowercase()
 
     /** Oracle S5: Sanitize book title for use as filename. */
     private fun sanitizeFileName(name: String): String {
@@ -1203,14 +1403,14 @@ class ReaderViewModel @Inject constructor(
      * Locks UserSettings (Council M12).
      */
     fun startTts() {
-        Log.i("ReaderVM", "TTS: start requested, emitting ExtractSentences")
+        AppLogger.i("ReaderVM", "TTS: start requested, emitting ExtractSentences")
         _ttsPanelState.update { it.copy(isSettingsLocked = true) }
         // Ensure currentChapterHref is set from current locator before TTS starts
         if (currentChapterHref.isBlank()) {
             val locator = _currentLocator.value
             if (locator != null) {
                 currentChapterHref = locator.href.toString()
-                Log.i("ReaderVM", "TTS: initialized currentChapterHref from locator: $currentChapterHref")
+                AppLogger.i("ReaderVM", "TTS: initialized currentChapterHref from locator: $currentChapterHref")
             }
         }
         isTtsStarting = true
@@ -1229,7 +1429,7 @@ class ReaderViewModel @Inject constructor(
                 // for the initial sentence (avoids viewport jump on TTS start).
                 delay(150)
             } catch (_: TimeoutCancellationException) {
-                Log.w("ReaderVM", "TTS: timed out waiting for first sentence — clearing isTtsStarting")
+                AppLogger.w("ReaderVM", "TTS: timed out waiting for first sentence — clearing isTtsStarting")
             }
             isTtsStarting = false
         }
@@ -1244,7 +1444,7 @@ class ReaderViewModel @Inject constructor(
     /** Resumes paused TTS playback without re-extracting sentences. */
     fun resumeTts() {
         if (ttsPlaybackState.value !is TtsPlaybackState.Paused) {
-            Log.w("ReaderVM", "TTS: resumeTts() called but not paused — ignoring")
+            AppLogger.w("ReaderVM", "TTS: resumeTts() called but not paused — ignoring")
             return
         }
         ttsController.resume()
@@ -1311,12 +1511,12 @@ class ReaderViewModel @Inject constructor(
      * and starts playback.
      */
     fun onSentencesExtracted(json: String) {
-        Log.i("ReaderVM", "TTS: onSentencesExtracted, json length=${json.length}")
+        AppLogger.i("ReaderVM", "TTS: onSentencesExtracted, json length=${json.length}")
         viewModelScope.launch(exceptionHandler.handler) {
             val (sentences, startIndex) = withContext(dispatchers.default) {
                 parseSentencesWithStartIndex(json)
             }
-            Log.i("ReaderVM", "TTS: parsed ${sentences.size} sentences, startIndex=$startIndex")
+            AppLogger.i("ReaderVM", "TTS: parsed ${sentences.size} sentences, startIndex=$startIndex")
             if (sentences.isEmpty()) {
                 errorChannel.tryEmit(
                     AppError("TTS: no sentences extracted from current chapter")
@@ -1358,6 +1558,10 @@ class ReaderViewModel @Inject constructor(
             } else {
                 // New object format: {firstVisibleSentenceId, colCount, sentences: [...]}
                 val root = JSONObject(json)
+                val jsError = root.optString("error", "")
+                if (jsError.isNotBlank()) {
+                    AppLogger.e("ReaderViewModel", "TTS: JS extraction error: $jsError")
+                }
                 val startIndex = root.optInt("firstVisibleSentenceId", 0)
                     .coerceAtLeast(0)
                 currentColCount = root.optInt("colCount", 1)
@@ -1367,7 +1571,7 @@ class ReaderViewModel @Inject constructor(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            android.util.Log.e("ReaderViewModel", "Failed to parse sentences JSON", e)
+            AppLogger.e("ReaderViewModel", "Failed to parse sentences JSON", e)
             emptyList<TtsSentence>() to 0
         }
     }
@@ -1384,7 +1588,7 @@ class ReaderViewModel @Inject constructor(
             val colIndex = obj.optInt("colIndex", 0)
             val locator = buildLocator(pub, href, progression, cssSelector, text)
             if (locator == null) {
-                Log.w("ReaderVM", "parseSentenceArray: null locator for sentence $id (href='$href', progression=$progression)")
+                AppLogger.w("ReaderVM", "parseSentenceArray: null locator for sentence $id (href='$href', progression=$progression)")
             }
             TtsSentence(id = id, text = text, locator = locator, colIndex = colIndex)
         }
@@ -1392,37 +1596,31 @@ class ReaderViewModel @Inject constructor(
 
     /** Assembles a Readium Locator from href + progression (Architect guide). */
     private fun buildLocator(pub: Publication, href: String, progression: Double, cssSelector: String? = null, sentenceText: String? = null): Locator? {
-        val normalizedHref = href
-            .substringBefore('#')
-            .substringBefore('?')
-            .trim('/')
+        val normalizedHref = normalizeHref(href)
         // Remove leading path segments to get just the filename for matching
         val filename = normalizedHref.substringAfterLast('/')
 
         val link = pub.readingOrder.find {
-            val linkHref = it.href.toString()
-                .substringBefore('#')
-                .substringBefore('?')
-                .trim('/')
+            val linkHref = normalizeHref(it.href.toString())
             linkHref == normalizedHref || linkHref == filename ||
                 linkHref.endsWith("/$filename") || linkHref.endsWith("\\$filename")
         }
         if (link == null) {
-            Log.w("ReaderVM", "buildLocator: no match for href='$href' (normalized='$normalizedHref', filename='$filename') in readingOrder")
+            AppLogger.w("ReaderVM", "buildLocator: no match for href='$href' (normalized='$normalizedHref', filename='$filename') in readingOrder")
         }
 
         // Use the matched link, or current chapter's link if available, or first reading order entry
         val resolvedLink = link
             ?: pub.readingOrder.find {
-                val linkHref = it.href.toString().substringBefore('#').substringBefore('?').trim('/')
-                val curHref = currentChapterHref.substringBefore('#').substringBefore('?').trim('/')
+                val linkHref = normalizeHref(it.href.toString())
+                val curHref = normalizeHref(currentChapterHref)
                 // currentChapterHref may be a full URL; compare by filename as well
                 linkHref == curHref ||
                     linkHref.substringAfterLast('/') == curHref.substringAfterLast('/') ||
                     linkHref.endsWith("/${curHref.substringAfterLast('/')}")
             }
             ?: run {
-                Log.w("ReaderVM", "buildLocator: all fallbacks exhausted for href='$href', currentChapterHref='$currentChapterHref' — returning null")
+                AppLogger.w("ReaderVM", "buildLocator: all fallbacks exhausted for href='$href', currentChapterHref='$currentChapterHref' — returning null")
                 return null
             }
 
@@ -1455,17 +1653,17 @@ class ReaderViewModel @Inject constructor(
     private fun handleChapterEnd() {
         val pub = publication ?: return
         val currentHref = currentChapterHref
-        Log.i("ReaderVM", "TTS: handleChapterEnd currentHref='$currentHref'")
+        AppLogger.i("ReaderVM", "TTS: handleChapterEnd currentHref='$currentHref'")
         val nextLink = nextReadingOrderLink(pub, currentHref)
 
         if (nextLink == null) {
             // End of book
-            Log.i("ReaderVM", "TTS reached end of book")
+            AppLogger.i("ReaderVM", "TTS reached end of book")
             stopTts()
             return
         }
 
-        Log.i("ReaderVM", "TTS: navigating to next chapter: ${nextLink.href}")
+        AppLogger.i("ReaderVM", "TTS: navigating to next chapter: ${nextLink.href}")
         // Navigate to next chapter
         isTtsNavigating = true
         _commands.tryEmit(ReaderCommand.ClearTtsHighlight)
@@ -1522,7 +1720,7 @@ class ReaderViewModel @Inject constructor(
                     }
                     delay(150)
                 } catch (_: TimeoutCancellationException) {
-                    Log.w("ReaderVM", "TTS: chapter transition timed out waiting for first sentence")
+                    AppLogger.w("ReaderVM", "TTS: chapter transition timed out waiting for first sentence")
                 }
                 isTtsStarting = false
             }
@@ -1532,7 +1730,7 @@ class ReaderViewModel @Inject constructor(
             ttsPlaybackState.value is TtsPlaybackState.Paused
         ) {
             // User-driven navigation mid-TTS (Oracle M7): stop + re-extract
-            android.util.Log.i("ReaderViewModel", "User navigation mid-TTS — re-extracting")
+            AppLogger.i("ReaderViewModel", "User navigation mid-TTS — re-extracting")
             ttsController.stop()
             _commands.tryEmit(ReaderCommand.ClearTtsHighlight)
             _commands.tryEmit(ReaderCommand.ExtractSentences)
@@ -1596,6 +1794,7 @@ class ReaderViewModel @Inject constructor(
         searchJob?.cancel() // triggers finally → iterator.close()
         sleepTimerJob?.cancel()
         ttsNavigationJob?.cancel()
+        bookmarkToggleTimeoutJob?.cancel()
         // Architect M3: disconnect only — do NOT stop playback.
         // The service continues in background via foreground notification.
         // stop() is called only on: explicit user stop, book switch, end of book.
@@ -1613,4 +1812,10 @@ class ReaderViewModel @Inject constructor(
         private const val TTS_HIGHLIGHT_GREY = "rgba(180,180,180,0.55)"
         private const val TTS_HIGHLIGHT_YELLOW = "#FFEB3B"
     }
+}
+
+/** Returns whether the system is currently in dark mode (night UI mode). */
+private fun Context.isSystemDarkMode(): Boolean {
+    val nightMode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+    return nightMode == Configuration.UI_MODE_NIGHT_YES
 }

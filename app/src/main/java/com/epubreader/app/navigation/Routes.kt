@@ -7,3 +7,6 @@ object BookshelfRoute
 
 @Serializable
 data class ReaderRoute(val bookUuid: String)
+
+@Serializable
+object LogViewerRoute

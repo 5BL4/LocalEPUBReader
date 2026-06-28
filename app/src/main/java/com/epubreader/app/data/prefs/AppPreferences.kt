@@ -7,7 +7,7 @@ data class AppPreferences(
     val fontSize: Float = 16f,
     val fontFamily: String = "sans-serif",
     val lineSpacing: Float = 1.4f,
-    val theme: ThemeMode = ThemeMode.SYSTEM,
+    val theme: ThemeMode = ThemeMode.SEPIA,
     val backgroundColor: Int = 0xFFFFFFFF.toInt(),
     val paragraphSpacing: Float = 0f,
     val paragraphIndent: Float = 0f,

@@ -30,6 +30,7 @@ class AndroidNativeApiTest {
             override fun onCenterTap() { called = true }
             override fun onSelectionChanged(text: String) {}
             override fun onSentencesExtracted(json: String) {}
+            override fun onFirstVisibleBlock(json: String) {}
         }
         api.onCenterTap("https://readium_package")
         assertTrue(called)
@@ -42,6 +43,7 @@ class AndroidNativeApiTest {
             override fun onCenterTap() {}
             override fun onSelectionChanged(text: String) { receivedText = text }
             override fun onSentencesExtracted(json: String) {}
+            override fun onFirstVisibleBlock(json: String) {}
         }
         api.onSelectionChanged("https://readium_assets", "selected text")
         assertTrue(receivedText == "selected text")
@@ -54,6 +56,7 @@ class AndroidNativeApiTest {
             override fun onCenterTap() { called = true }
             override fun onSelectionChanged(text: String) {}
             override fun onSentencesExtracted(json: String) {}
+            override fun onFirstVisibleBlock(json: String) {}
         }
         api.onCenterTap("https://evil.com")
         assertFalse(called)
@@ -66,6 +69,7 @@ class AndroidNativeApiTest {
             override fun onCenterTap() {}
             override fun onSelectionChanged(text: String) { called = true }
             override fun onSentencesExtracted(json: String) {}
+            override fun onFirstVisibleBlock(json: String) {}
         }
         api.onSelectionChanged("https://malicious.org", "hello")
         assertFalse(called)
@@ -95,6 +99,7 @@ class AndroidNativeApiTest {
             override fun onCenterTap() {}
             override fun onSelectionChanged(text: String) {}
             override fun onSentencesExtracted(json: String) { receivedJson = json }
+            override fun onFirstVisibleBlock(json: String) {}
         }
         val testJson = """[{"id":0}]"""
         api.onSentencesExtracted("https://readium_package", testJson)
@@ -108,6 +113,7 @@ class AndroidNativeApiTest {
             override fun onCenterTap() {}
             override fun onSelectionChanged(text: String) {}
             override fun onSentencesExtracted(json: String) { called = true }
+            override fun onFirstVisibleBlock(json: String) {}
         }
         api.onSentencesExtracted("https://evil.com", """[{"id":0}]""")
         assertFalse(called)
@@ -118,5 +124,39 @@ class AndroidNativeApiTest {
         holder.callback = null
         // Should not throw NullPointerException
         api.onSentencesExtracted("https://readium_package", "{}")
+    }
+
+    @Test
+    fun `allowed origin invokes onFirstVisibleBlock callback`() {
+        var receivedJson = ""
+        holder.callback = object : BridgeCallback {
+            override fun onCenterTap() {}
+            override fun onSelectionChanged(text: String) {}
+            override fun onSentencesExtracted(json: String) {}
+            override fun onFirstVisibleBlock(json: String) { receivedJson = json }
+        }
+        val testJson = """{"text":"hello","cssSelector":"p:nth-of-type(1)","href":"ch1.xhtml","progression":0.1}"""
+        api.onFirstVisibleBlock("https://readium_package", testJson)
+        assertEquals(testJson, receivedJson)
+    }
+
+    @Test
+    fun `blocked origin does not invoke onFirstVisibleBlock callback`() {
+        var called = false
+        holder.callback = object : BridgeCallback {
+            override fun onCenterTap() {}
+            override fun onSelectionChanged(text: String) {}
+            override fun onSentencesExtracted(json: String) {}
+            override fun onFirstVisibleBlock(json: String) { called = true }
+        }
+        api.onFirstVisibleBlock("https://evil.com", "{}")
+        assertFalse(called)
+    }
+
+    @Test
+    fun `null callback does not crash on onFirstVisibleBlock`() {
+        holder.callback = null
+        // Should not throw NullPointerException
+        api.onFirstVisibleBlock("https://readium_package", "{}")
     }
 }

@@ -100,4 +100,24 @@
     <string name="tts_error_message">The TTS engine encountered an error. Please check your device\'s TTS settings.</string>
     <string name="tts_dismiss">Dismiss</string>
     <string name="tts_settings_locked">Listening is active. Formatting cannot be changed during playback.</string>
+
+    <!-- Reader bottom bar & top bar extras -->
+    <string name="reader_progress">Progress</string>
+    <string name="reader_progress_title">Reading Progress</string>
+    <string name="reader_progress_chapter">Current chapter</string>
+    <string name="reader_progress_percent">%1$d%%</string>
+    <string name="reader_more">More</string>
+    <string name="reader_share">Share</string>
+    <string name="reader_share_epub">Share EPUB file</string>
+    <string name="reader_scroll_mode">Scroll mode</string>
+    <string name="reader_listen">Listen</string>
+
+    <!-- In-app log viewer -->
+    <string name="log_viewer_title">App Logs</string>
+    <string name="log_viewer_export">Export logs</string>
+    <string name="log_viewer_clear">Clear logs</string>
+    <string name="log_viewer_search_hint">Search tag or message…</string>
+    <string name="log_viewer_filter_all">All</string>
+    <string name="log_viewer_count">%1$d entries</string>
+    <string name="log_viewer_empty">No logs yet</string>
 </resources>

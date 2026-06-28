@@ -16,6 +16,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -50,6 +52,7 @@ import com.epubreader.app.ui.bookshelf.components.BookCard
 @Composable
 fun BookshelfScreen(
     onBookClick: (String) -> Unit,
+    onLogViewerClick: () -> Unit,
     viewModel: BookshelfViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -97,7 +100,15 @@ fun BookshelfScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.bookshelf_title)) }
+                title = { Text(stringResource(R.string.bookshelf_title)) },
+                actions = {
+                    IconButton(onClick = onLogViewerClick) {
+                        Icon(
+                            Icons.Default.BugReport,
+                            contentDescription = stringResource(R.string.log_viewer_title)
+                        )
+                    }
+                }
             )
         },
         floatingActionButton = {

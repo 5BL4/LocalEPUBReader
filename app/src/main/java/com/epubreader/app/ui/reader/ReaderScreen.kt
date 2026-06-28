@@ -6,37 +6,44 @@ import android.widget.Toast
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -53,7 +60,6 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidViewBinding
 import androidx.core.view.WindowCompat
@@ -62,6 +68,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.epubreader.app.R
+import com.epubreader.app.core.share.ShareEpubUtil
+import com.epubreader.app.core.log.AppLogger
 import com.epubreader.app.data.prefs.ThemeMode
 import com.epubreader.app.core.tts.TtsPlaybackState
 import com.epubreader.app.databinding.FragmentReaderHostContainerBinding
@@ -89,6 +97,7 @@ fun ReaderScreen(
     val currentLocator by viewModel.currentLocator.collectAsStateWithLifecycle()
     val knowledgeState by viewModel.knowledgeState.collectAsStateWithLifecycle()
     val exportState by viewModel.exportState.collectAsStateWithLifecycle()
+    val bookFilePath by viewModel.bookFilePath.collectAsStateWithLifecycle()
     val noteEditorState by viewModel.noteEditorState.collectAsStateWithLifecycle()
 
     // Phase 6: TTS state
@@ -100,12 +109,21 @@ fun ReaderScreen(
     // Reader settings state
     val appPreferences by viewModel.appPreferences.collectAsStateWithLifecycle()
 
+    // Sync system dark mode to ViewModel so Readium WebView matches Compose theme
+    // when the user selects "System" theme mode.
+    val systemDark = isSystemInDarkTheme()
+    LaunchedEffect(systemDark) {
+        viewModel.setSystemDarkMode(systemDark)
+    }
+
     // S1 (NEVER #12): derivedStateOf — bookmark icon only recomposes when
     // the derived boolean actually changes, not on every locator emission.
     // S-E: Uses pre-computed href set (no JSON parsing per scroll).
     val isBookmarked by remember {
         derivedStateOf {
-            val currentHref = currentLocator?.href?.toString() ?: return@derivedStateOf false
+            val currentHref = currentLocator?.href?.toString()
+                ?.substringBefore('#')?.substringBefore('?')?.trim('/')?.lowercase()
+                ?: return@derivedStateOf false
             currentHref in bookmarkedHrefs
         }
     }
@@ -230,134 +248,18 @@ fun ReaderScreen(
             TocDrawer(
                 items = uiState.toc,
                 onItemClick = { index ->
-                    android.util.Log.d("ReaderScreen", "TOC item clicked: index=$index, title=${uiState.toc.getOrNull(index)?.title}")
+                    AppLogger.d("ReaderScreen", "TOC item clicked: index=$index, title=${uiState.toc.getOrNull(index)?.title}")
                     viewModel.navigateToTocItem(index)
                     scope.launch { drawerState.close() }
                 }
             )
         }
     ) {
-        Scaffold(
-            topBar = {
-                if (uiState.isToolbarVisible) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        tonalElevation = 1.dp,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                            .padding(horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = onBack,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = stringResource(R.string.action_back),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Text(
-                            text = uiState.bookTitle
-                                ?: stringResource(R.string.reader_loading),
-                            style = MaterialTheme.typography.titleSmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 8.dp)
-                        )
-                        IconButton(
-                            onClick = { viewModel.toggleTocDrawer() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Menu,
-                                contentDescription = stringResource(R.string.reader_toc),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        IconButton(
-                            onClick = { viewModel.toggleSearchPanel() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Search,
-                                contentDescription = stringResource(R.string.reader_search),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        IconButton(
-                            onClick = { viewModel.toggleKnowledgePanel() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Notes,
-                                contentDescription = stringResource(R.string.reader_knowledge),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        IconButton(
-                            onClick = { viewModel.toggleBookmark() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                if (isBookmarked) Icons.Default.Bookmark
-                                else Icons.Default.BookmarkBorder,
-                                contentDescription = stringResource(R.string.reader_bookmark),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        IconButton(
-                            onClick = { viewModel.toggleSettingsPanel() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Settings,
-                                contentDescription = stringResource(R.string.reader_settings),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        // Phase 6: TTS icon — state-aware toggle
-                        IconButton(
-                            onClick = { viewModel.toggleTtsPlayback() },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                imageVector = when (ttsPlaybackState) {
-                                    is TtsPlaybackState.Playing -> Icons.Default.Pause
-                                    else -> Icons.Default.VolumeUp
-                                },
-                                contentDescription = stringResource(R.string.tts_panel_title),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                }
-                }
-            },
-            bottomBar = {
-                SelectionToolbar(
-                    state = selectionState,
-                    onHighlight = { viewModel.requestHighlight() },
-                    onNote = { viewModel.requestNote() },
-                    onBookmark = { viewModel.requestBookmarkSelection() },
-                    onCopy = {
-                        clipboardManager.setText(AnnotatedString(selectionState.text))
-                    },
-                    onDismiss = { viewModel.dismissSelection() }
-                )
-            }
-        ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Content — fills entire screen, NEVER resized by toolbar visibility.
+            // This prevents EPUB CSS column recalculation on toolbar toggle.
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
+                modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
                 when {
@@ -388,6 +290,175 @@ fun ReaderScreen(
                                 fragment?.bind(viewModel)
                             }
                         )
+                    }
+                }
+            }
+
+            // Top bar — slides in/out from top, overlaid on content.
+            AnimatedVisibility(
+                visible = uiState.isToolbarVisible,
+                enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+                modifier = Modifier.align(Alignment.TopCenter)
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Back arrow (left)
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = stringResource(R.string.action_back),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        // Spacer pushes remaining icons to the right
+                        Spacer(modifier = Modifier.weight(1f))
+                        // Bookmark toggle (right)
+                        IconButton(
+                            onClick = { viewModel.toggleBookmark() },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                if (isBookmarked) Icons.Default.Bookmark
+                                else Icons.Default.BookmarkBorder,
+                                contentDescription = stringResource(R.string.reader_bookmark),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        // Share EPUB file (right) — shares the entire .epub via system share sheet
+                        IconButton(
+                            onClick = { ShareEpubUtil.shareEpub(context, bookFilePath) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Share,
+                                contentDescription = stringResource(R.string.reader_share_epub),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        // More (right) — overflow dropdown
+                        var showMoreMenu by remember { mutableStateOf(false) }
+                        IconButton(
+                            onClick = { showMoreMenu = true },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = stringResource(R.string.reader_more),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            DropdownMenu(
+                                expanded = showMoreMenu,
+                                onDismissRequest = { showMoreMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (appPreferences.scroll)
+                                                stringResource(R.string.reader_settings_pagination)
+                                            else
+                                                stringResource(R.string.reader_settings_scroll)
+                                        )
+                                    },
+                                    onClick = {
+                                        viewModel.setScrollMode(!appPreferences.scroll)
+                                        showMoreMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Bottom bar — slides in/out from bottom, overlaid on content.
+            // Mutually exclusive with selection toolbar.
+            AnimatedVisibility(
+                visible = uiState.isToolbarVisible && !selectionState.isActive,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                ReaderBottomBar(
+                    onToc = { viewModel.toggleTocDrawer() },
+                    onSearch = { viewModel.toggleSearchPanel() },
+                    onKnowledge = { viewModel.toggleKnowledgePanel() },
+                    onProgress = { viewModel.toggleProgressPanel() },
+                    onSettings = { viewModel.toggleSettingsPanel() }
+                )
+            }
+
+            // Selection toolbar — slides in/out from bottom, overlaid on content.
+            // Mutually exclusive with bottom bar.
+            AnimatedVisibility(
+                visible = selectionState.isActive,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                SelectionToolbar(
+                    state = selectionState,
+                    onHighlight = { viewModel.requestHighlight() },
+                    onNote = { viewModel.requestNote() },
+                    onBookmark = { viewModel.requestBookmarkSelection() },
+                    onCopy = {
+                        clipboardManager.setText(AnnotatedString(selectionState.text))
+                    },
+                    onDismiss = { viewModel.dismissSelection() }
+                )
+            }
+
+            // TTS FAB — fades + scales in, positioned above bottom bar.
+            // 64dp = 48dp bottom bar height + 16dp margin.
+            AnimatedVisibility(
+                visible = uiState.isToolbarVisible && !selectionState.isActive,
+                enter = fadeIn() + scaleIn(initialScale = 0.8f),
+                exit = fadeOut() + scaleOut(targetScale = 0.8f),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 64.dp)
+            ) {
+                Surface(
+                    onClick = { viewModel.toggleTtsPlayback() },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    contentColor = MaterialTheme.colorScheme.surface,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        when (ttsPlaybackState) {
+                            is TtsPlaybackState.Playing -> Icon(
+                                Icons.Default.Pause,
+                                contentDescription = stringResource(R.string.tts_panel_title),
+                                modifier = Modifier.size(22.dp)
+                            )
+                            is TtsPlaybackState.Paused -> Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = stringResource(R.string.tts_panel_title),
+                                modifier = Modifier.size(22.dp)
+                            )
+                            else -> Text(
+                                "听",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
                     }
                 }
             }
@@ -441,6 +512,14 @@ fun ReaderScreen(
                 onPageMarginsChange = { viewModel.setPageMargins(it) },
                 onScrollModeChange = { viewModel.setScrollMode(it) },
                 onDismiss = { viewModel.closeSettingsPanel() }
+            )
+        }
+
+        // Progress panel overlay (ModalBottomSheet)
+        if (uiState.isProgressPanelOpen) {
+            ProgressPanel(
+                progress = (currentLocator?.locations?.totalProgression ?: 0.0).toFloat(),
+                onDismiss = { viewModel.closeProgressPanel() }
             )
         }
 

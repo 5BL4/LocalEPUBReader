@@ -44,137 +44,128 @@ object TtsJsScripts {
     window.__epubTtsExtracting = true;
 
     var origin = window.location.origin;
-    var href = window.location.pathname;
-    var scrollHeight = document.body.scrollHeight || 1;
+    var payload = null;
+    var colCount = 1;
 
-    // Collect text nodes from block-level elements (skip script/style/img)
-    var blockSelector = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, td, div';
-    var blocks = document.querySelectorAll(blockSelector);
-    var sentences = [];
-    var ranges = [];
-    var sentenceId = 0;
+    try {
+        var href = window.location.pathname;
+        var scrollHeight = document.body.scrollHeight || 1;
 
-    // Sentence split regex: Latin (. ! ?) + CJK (。！？)
-    var splitRegex = /[^.!?。！？]+[.!?。！？]+["'"')\]]*\s*|[^.!?。！？]+$/g;
+        var blockSelector = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, td, div';
+        var blocks = document.querySelectorAll(blockSelector);
+        var sentences = [];
+        var ranges = [];
+        var sentenceId = 0;
 
-    blocks.forEach(function(block) {
-        // Skip hidden elements (getComputedStyle works reliably in CSS column layouts)
-        var cs = window.getComputedStyle(block);
-        if (cs.display === 'none' || cs.visibility === 'hidden') return;
-        // Skip elements inside script/style
-        if (block.tagName === 'SCRIPT' || block.tagName === 'STYLE') return;
+        var splitRegex = /[^.!?。！？]+[.!?。！？]+["'"')\]]*\s*|[^.!?。！？]+$/g;
 
-        var text = block.textContent.trim();
-        if (!text) return;
+        blocks.forEach(function(block) {
+            var cs = window.getComputedStyle(block);
+            if (cs.display === 'none' || cs.visibility === 'hidden') return;
+            if (block.tagName === 'SCRIPT' || block.tagName === 'STYLE') return;
 
-        var matches = text.match(splitRegex);
-        if (!matches) return;
+            var text = block.textContent.trim();
+            if (!text) return;
 
-        // Column-aware progression for paginated (CSS multi-column) layout.
-        // Falls back to scroll-based progression when columnCount is not available.
-        var bodyStyle = getComputedStyle(document.body);
-        var colCount = parseInt(bodyStyle.columnCount) || 1;
-        var bodyRect = document.body.getBoundingClientRect();
-        var blockRect = block.getBoundingClientRect();
-        var progression;
-        var colIndex = 0;
-        if (colCount > 1) {
-            // Map block's horizontal position to column index, then blend with
-            // vertical position within the column for a smooth progression.
-            // In CSS multi-column layout, bodyRect.height is the viewport height
-            // (single column height), not the total content height. The column
-            // height equals bodyRect.height for balanced columns.
-            var colWidth = bodyRect.width / colCount;
-            var blockCenterX = blockRect.left + blockRect.width / 2;
-            colIndex = Math.min(Math.max(Math.floor((blockCenterX - bodyRect.left) / colWidth), 0), colCount - 1);
-            // Column height = body height in balanced column layout
-            var colHeight = bodyRect.height;
-            var withinColFraction = (blockRect.top - bodyRect.top) / colHeight;
-            withinColFraction = Math.max(0, Math.min(1, withinColFraction));
-            progression = (colIndex + withinColFraction) / colCount;
-        } else {
-            progression = Math.min(
-                (blockRect.top + window.scrollY) / document.documentElement.scrollHeight,
-                1.0
-            );
-        }
-        progression = Math.max(0, Math.min(1, progression));
+            var matches = text.match(splitRegex);
+            if (!matches) return;
 
-        // Compute a CSS selector for this block element (Fix D)
-        var blockCssSelector = '';
-        try {
-            var el = block;
-            var path = [];
-            while (el && el !== document.body && el.parentElement) {
-                var tag = el.tagName.toLowerCase();
-                if (el.id) {
-                    path.unshift('#' + el.id);
+            var bodyStyle = getComputedStyle(document.body);
+            colCount = parseInt(bodyStyle.columnCount) || 1;
+            var bodyRect = document.body.getBoundingClientRect();
+            var blockRect = block.getBoundingClientRect();
+            var progression;
+            var colIndex = 0;
+            if (colCount > 1) {
+                var colWidth = bodyRect.width / colCount;
+                var blockCenterX = blockRect.left + blockRect.width / 2;
+                colIndex = Math.min(Math.max(Math.floor((blockCenterX - bodyRect.left) / colWidth), 0), colCount - 1);
+                var colHeight = bodyRect.height;
+                var withinColFraction = (blockRect.top - bodyRect.top) / colHeight;
+                withinColFraction = Math.max(0, Math.min(1, withinColFraction));
+                progression = (colIndex + withinColFraction) / colCount;
+            } else {
+                progression = Math.min(
+                    (blockRect.top + window.scrollY) / document.documentElement.scrollHeight,
+                    1.0
+                );
+            }
+            progression = Math.max(0, Math.min(1, progression));
+
+            var blockCssSelector = '';
+            try {
+                var el = block;
+                var path = [];
+                while (el && el !== document.body && el.parentElement) {
+                    var tag = el.tagName.toLowerCase();
+                    if (el.id) {
+                        path.unshift('#' + el.id);
+                        break;
+                    }
+                    var siblings = Array.prototype.filter.call(el.parentElement.children, function(c) {
+                        return c.tagName === el.tagName;
+                    });
+                    if (siblings.length > 1) {
+                        path.unshift(tag + ':nth-of-type(' + (siblings.indexOf(el) + 1) + ')');
+                    } else {
+                        path.unshift(tag);
+                    }
+                    el = el.parentElement;
+                }
+                blockCssSelector = path.join(' > ');
+            } catch(e) { /* selector generation can fail on unusual DOM */ }
+
+            matches.forEach(function(sentence) {
+                var trimmed = sentence.trim();
+                if (trimmed.length < 2) return;
+
+                try {
+                    var range = document.createRange();
+                    range.selectNodeContents(block);
+                    ranges.push({ id: sentenceId, range: range, block: block });
+                } catch(e) { /* Range creation can fail on some elements */ }
+
+                sentences.push({
+                    id: sentenceId,
+                    text: trimmed,
+                    href: href,
+                    progression: parseFloat(progression.toFixed(4)),
+                    cssSelector: blockCssSelector,
+                    colIndex: colIndex
+                });
+                sentenceId++;
+            });
+        });
+
+        var firstVisibleSentenceId = 0;
+        var vpWidth = window.innerWidth;
+        var vpHeight = window.innerHeight;
+        for (var i = 0; i < ranges.length; i++) {
+            var r = ranges[i];
+            if (r && r.block) {
+                var rect = r.block.getBoundingClientRect();
+                if (rect.right > 0 && rect.left < vpWidth &&
+                    rect.bottom > 0 && rect.top < vpHeight) {
+                    firstVisibleSentenceId = r.id;
                     break;
                 }
-                var siblings = Array.prototype.filter.call(el.parentElement.children, function(c) {
-                    return c.tagName === el.tagName;
-                });
-                if (siblings.length > 1) {
-                    path.unshift(tag + ':nth-of-type(' + (siblings.indexOf(el) + 1) + ')');
-                } else {
-                    path.unshift(tag);
-                }
-                el = el.parentElement;
-            }
-            blockCssSelector = path.join(' > ');
-        } catch(e) { /* selector generation can fail on unusual DOM */ }
-
-        matches.forEach(function(sentence) {
-            var trimmed = sentence.trim();
-            if (trimmed.length < 2) return;
-
-            // Store DOM range for highlighting (approximate: whole block)
-            try {
-                var range = document.createRange();
-                range.selectNodeContents(block);
-                ranges.push({ id: sentenceId, range: range, block: block });
-            } catch(e) { /* Range creation can fail on some elements */ }
-
-            sentences.push({
-                id: sentenceId,
-                text: trimmed,
-                href: href,
-                progression: parseFloat(progression.toFixed(4)),
-                cssSelector: blockCssSelector,
-                colIndex: colIndex
-            });
-            sentenceId++;
-        });
-    });
-
-    // Find the first sentence visible in the current viewport (Fix A)
-    // In CSS multi-column paginated layout, only one column is visible.
-    // A block is visible if its bounding rect overlaps the viewport.
-    var firstVisibleSentenceId = 0;
-    var vpWidth = window.innerWidth;
-    var vpHeight = window.innerHeight;
-    for (var i = 0; i < ranges.length; i++) {
-        var r = ranges[i];
-        if (r && r.block) {
-            var rect = r.block.getBoundingClientRect();
-            if (rect.right > 0 && rect.left < vpWidth &&
-                rect.bottom > 0 && rect.top < vpHeight) {
-                firstVisibleSentenceId = r.id;
-                break;
             }
         }
-    }
 
-    // Store ranges globally for highlight/clear operations
-    window.__epubTtsRanges = ranges;
-    window.__epubTtsExtracting = false;
+        window.__epubTtsRanges = ranges;
 
-    if (window.AndroidNativeApi && sentences.length > 0) {
-        var payload = {
+        payload = {
             firstVisibleSentenceId: firstVisibleSentenceId,
             colCount: colCount,
             sentences: sentences
         };
+    } catch(e) {
+        payload = { error: String(e && e.message || e), sentences: [] };
+    } finally {
+        window.__epubTtsExtracting = false;
+    }
+
+    if (window.AndroidNativeApi && typeof window.AndroidNativeApi.onSentencesExtracted === 'function' && payload) {
         window.AndroidNativeApi.onSentencesExtracted(origin, JSON.stringify(payload));
     }
 })();
@@ -193,19 +184,22 @@ object TtsJsScripts {
     fun highlightSentence(index: Int, color: String): String = """
 (function() {
     var origin = window.location.origin;
-    // Clear previous highlight
+    // Clear previous highlight (legacy span-based + inline style)
     var prev = document.querySelector('.__epub_tts_highlight');
     if (prev) {
         var parent = prev.parentNode;
         while (prev.firstChild) parent.insertBefore(prev.firstChild, prev);
         parent.removeChild(prev);
     }
+    if (window.__epubTtsLastHighlightBlock && window.__epubTtsLastHighlightBlock.style) {
+        window.__epubTtsLastHighlightBlock.style.backgroundColor = '';
+    }
 
     var ranges = window.__epubTtsRanges;
-    if (!ranges) return;
+    if (!ranges) return JSON.stringify({ok: false, error: 'no ranges', rangesCount: 0});
 
     var entry = ranges.find(function(r) { return r.id === $index; });
-    if (!entry || !entry.range) return;
+    if (!entry || !entry.range) return JSON.stringify({ok: false, error: 'entry not found', index: $index, rangesCount: ranges.length});
 
     // Use CSS-only highlighting on the block element, not DOM mutation.
     // range.surroundContents(span) triggers Chromium scroll anchoring
@@ -215,7 +209,9 @@ object TtsJsScripts {
         entry.block.style.backgroundColor = '$color';
         entry.block.style.overflowAnchor = 'none';
         entry.block.style.transition = 'background-color 0.15s ease';
+        window.__epubTtsLastHighlightBlock = entry.block;
     }
+    return JSON.stringify({ok: true, index: $index, rangesCount: ranges.length});
 })();
     """.trimIndent()
 

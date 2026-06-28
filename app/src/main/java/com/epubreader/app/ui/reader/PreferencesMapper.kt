@@ -3,11 +3,10 @@ package com.epubreader.app.ui.reader
 import com.epubreader.app.data.prefs.AppPreferences
 import com.epubreader.app.data.prefs.ThemeMode
 import org.readium.r2.navigator.epub.EpubPreferences
-import org.readium.r2.navigator.preferences.Color
 import org.readium.r2.navigator.preferences.FontFamily
 import org.readium.r2.navigator.preferences.Theme
 
-fun AppPreferences.toEpubPreferences(): EpubPreferences {
+fun AppPreferences.toEpubPreferences(systemDark: Boolean = false): EpubPreferences {
     // lineHeight, paragraphSpacing and paragraphIndent only take effect when
     // publisher styles are disabled. Turn them off only when the user has
     // customised paragraph typography, so the default rendering still respects
@@ -20,9 +19,9 @@ fun AppPreferences.toEpubPreferences(): EpubPreferences {
         fontFamily = fontFamily.toFontFamily(),
         fontSize = (fontSize / 16.0).coerceIn(0.5, 3.0),
         lineHeight = lineSpacing.toDouble(),
-        backgroundColor = Color(backgroundColor),
+        backgroundColor = null,
         textColor = null,
-        theme = theme.toReadiumTheme(),
+        theme = theme.toReadiumTheme(systemDark),
         scroll = scroll,
         paragraphSpacing = paragraphSpacing.toDouble(),
         paragraphIndent = paragraphIndent.toDouble(),
@@ -37,10 +36,11 @@ private fun String.toFontFamily(): FontFamily = when (this) {
     else -> FontFamily.SANS_SERIF
 }
 
-private fun ThemeMode.toReadiumTheme(): Theme = when (this) {
+private fun ThemeMode.toReadiumTheme(systemDark: Boolean): Theme = when (this) {
     ThemeMode.SEPIA -> Theme.SEPIA
     ThemeMode.DARK -> Theme.DARK
-    ThemeMode.LIGHT, ThemeMode.SYSTEM -> Theme.LIGHT
+    ThemeMode.LIGHT -> Theme.LIGHT
+    ThemeMode.SYSTEM -> if (systemDark) Theme.DARK else Theme.LIGHT
 }
 
 private const val DEFAULT_LINE_SPACING = 1.4f

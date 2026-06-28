@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.epubreader.app.core.DispatchersProvider
 import com.epubreader.app.core.Result
+import com.epubreader.app.core.log.AppLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.withContext
 import org.readium.r2.shared.publication.Publication
@@ -104,7 +105,7 @@ class ReadiumMetadataParser @Inject constructor(
             }
         } catch (e: Exception) {
             // Cover extraction is best-effort; failure does not fail the whole parse
-            android.util.Log.w("ReadiumMetadataParser", "Cover extraction failed", e)
+            AppLogger.w("ReadiumMetadataParser", "Cover extraction failed", e)
             null
         }
     }

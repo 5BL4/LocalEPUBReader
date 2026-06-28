@@ -7,6 +7,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.epubreader.app.ui.bookshelf.BookshelfScreen
 import com.epubreader.app.ui.reader.ReaderScreen
+import com.epubreader.app.ui.log.LogViewerScreen
 
 @Composable
 fun EpubReaderNavHost() {
@@ -14,13 +15,19 @@ fun EpubReaderNavHost() {
     NavHost(navController = navController, startDestination = BookshelfRoute) {
         composable<BookshelfRoute> {
             BookshelfScreen(
-                onBookClick = { uuid -> navController.navigate(ReaderRoute(uuid)) }
+                onBookClick = { uuid -> navController.navigate(ReaderRoute(uuid)) },
+                onLogViewerClick = { navController.navigate(LogViewerRoute) }
             )
         }
         composable<ReaderRoute> { backStackEntry ->
             val route = backStackEntry.toRoute<ReaderRoute>()
             ReaderScreen(
                 bookUuid = route.bookUuid,
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable<LogViewerRoute> {
+            LogViewerScreen(
                 onBack = { navController.popBackStack() }
             )
         }

@@ -2,6 +2,7 @@ package com.epubreader.app.ui.reader
 
 import android.webkit.JavascriptInterface
 import androidx.annotation.Keep
+import com.epubreader.app.core.log.AppLogger
 
 /**
  * JS Bridge interface exposed to EPUB content's WebView.
@@ -52,8 +53,37 @@ class AndroidNativeApi(private val callbackHolder: BridgeCallbackHolder) {
      */
     @JavascriptInterface
     fun onSentencesExtracted(origin: String, json: String) {
-        if (!isAllowedOrigin(origin)) return
-        callbackHolder.callback?.onSentencesExtracted(json)
+        if (!isAllowedOrigin(origin)) {
+            AppLogger.w("AndroidNativeApi", "onSentencesExtracted: rejected origin=$origin")
+            return
+        }
+        val cb = callbackHolder.callback
+        if (cb == null) {
+            AppLogger.w("AndroidNativeApi", "onSentencesExtracted: callback holder is null")
+            return
+        }
+        cb.onSentencesExtracted(json)
+    }
+
+    /**
+     * Called when JS finds the first visible block element for bookmark anchoring.
+     * [json] is a JSON object: {"text":"...","cssSelector":"...","href":"...","progression":0.05}
+     * or empty string if no visible block was found.
+     *
+     * Security (NEVER #8): [origin] is validated against [ALLOWED_ORIGINS].
+     */
+    @JavascriptInterface
+    fun onFirstVisibleBlock(origin: String, json: String) {
+        if (!isAllowedOrigin(origin)) {
+            AppLogger.w("AndroidNativeApi", "onFirstVisibleBlock: rejected origin=$origin")
+            return
+        }
+        val cb = callbackHolder.callback
+        if (cb == null) {
+            AppLogger.w("AndroidNativeApi", "onFirstVisibleBlock: callback holder is null")
+            return
+        }
+        cb.onFirstVisibleBlock(json)
     }
 
     companion object {
@@ -75,6 +105,12 @@ interface BridgeCallback {
      * The implementation should parse on a background thread (Oracle S5).
      */
     fun onSentencesExtracted(json: String)
+
+    /**
+     * Called when JS finds the first visible block element for bookmark anchoring.
+     * [json] is a JSON object or empty string. Parse on a background thread.
+     */
+    fun onFirstVisibleBlock(json: String)
 }
 
 /**

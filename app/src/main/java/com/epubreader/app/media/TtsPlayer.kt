@@ -3,7 +3,7 @@ package com.epubreader.app.media
 import android.content.Context
 import android.os.Build
 import android.os.Looper
-import android.util.Log
+import com.epubreader.app.core.log.AppLogger
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
@@ -74,20 +74,20 @@ class TtsPlayer(
     private val audioFocusListener = android.media.AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             android.media.AudioManager.AUDIOFOCUS_LOSS -> {
-                Log.d(tag, "Audio focus lost permanently — pausing")
+                AppLogger.d(tag, "Audio focus lost permanently — pausing")
                 pausePlayback()
             }
             android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                Log.d(tag, "Audio focus transient loss — pausing")
+                AppLogger.d(tag, "Audio focus transient loss — pausing")
                 pausePlayback()
             }
             android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 // For speech: pause instead of duck
-                Log.d(tag, "Audio focus can-duck — pausing (speech content)")
+                AppLogger.d(tag, "Audio focus can-duck — pausing (speech content)")
                 pausePlayback()
             }
             android.media.AudioManager.AUDIOFOCUS_GAIN -> {
-                Log.d(tag, "Audio focus regained — resuming")
+                AppLogger.d(tag, "Audio focus regained — resuming")
                 resumePlayback()
             }
         }
@@ -143,7 +143,7 @@ class TtsPlayer(
                     if (sentences.isNotEmpty() && currentSentenceIndex >= 0) {
                         val hasFocus = requestAudioFocus()
                         if (!hasFocus) {
-                            Log.w(tag, "Audio focus denied on engine-ready resume — cannot start playback")
+                            AppLogger.w(tag, "Audio focus denied on engine-ready resume — cannot start playback")
                             return@collect
                         }
                         speakCurrentSentence()
@@ -218,6 +218,7 @@ class TtsPlayer(
                 Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
                 Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
                 Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                Player.COMMAND_SET_MEDIA_ITEM,
                 Player.COMMAND_RELEASE
             )
             .build()
@@ -250,7 +251,7 @@ class TtsPlayer(
         } else {
             0
         }
-        Log.i(tag, "handleSetMediaItems: ${sentences.size} sentences, startIdx=$currentSentenceIndex")
+        AppLogger.i(tag, "handleSetMediaItems: ${sentences.size} sentences, startIdx=$currentSentenceIndex")
         ttsBus.setCurrentSentenceIndex(currentSentenceIndex)
         invalidateState()
         return Futures.immediateVoidFuture()
@@ -266,7 +267,7 @@ class TtsPlayer(
 
         val targetIndex = (positionMs / TtsPlaybackState_SENTENCE_MS).toInt()
             .coerceIn(0, sentences.lastIndex)
-        Log.i(tag, "handleSeek: positionMs=$positionMs → sentenceIdx=$targetIndex")
+        AppLogger.i(tag, "handleSeek: positionMs=$positionMs → sentenceIdx=$targetIndex")
         currentSentenceIndex = targetIndex
         ttsBus.setCurrentSentenceIndex(targetIndex)
 
@@ -284,7 +285,7 @@ class TtsPlayer(
     }
 
     override fun handleRelease(): ListenableFuture<*> {
-        Log.i(tag, "handleRelease — shutting down TTS")
+        AppLogger.i(tag, "handleRelease — shutting down TTS")
         abandonAudioFocus()
         ttsEngine.shutdown()
         return Futures.immediateVoidFuture()
@@ -294,26 +295,27 @@ class TtsPlayer(
 
     private fun startPlayback() {
         val engineState = ttsEngine.state.value
-        Log.d(tag, "startPlayback: engine=${engineState}, sentences=${ttsBus.sentences.value.size}, index=$currentSentenceIndex")
+        AppLogger.d(tag, "startPlayback: engine=${engineState}, sentences=${ttsBus.sentences.value.size}, index=$currentSentenceIndex")
         if (engineState !is TtsEngineState.Ready) {
-            Log.w(tag, "startPlayback: engine not ready ($engineState) — initializing")
+            AppLogger.w(tag, "startPlayback: engine not ready ($engineState) — initializing")
             ttsEngine.initialize()
             return // M2: will resume when engine becomes Ready (observed in init block)
         }
 
         val sentences = ttsBus.sentences.value
         if (sentences.isEmpty()) {
-            Log.w(tag, "startPlayback: no sentences loaded")
+            AppLogger.w(tag, "startPlayback: no sentences loaded")
             return
         }
 
         // Audio focus (NEVER #11)
         val hasFocus = requestAudioFocus()
         if (!hasFocus) {
-            Log.w(tag, "Audio focus denied — cannot start playback")
+            AppLogger.w(tag, "Audio focus denied — cannot start playback")
             return
         }
 
+        currentSentenceIndex = ttsBus.currentSentenceIndex.value
         if (currentSentenceIndex < 0) currentSentenceIndex = 0
         speakCurrentSentence()
         invalidateState()
@@ -342,14 +344,14 @@ class TtsPlayer(
     private fun speakCurrentSentence() {
         val sentences = ttsBus.sentences.value
         if (currentSentenceIndex < 0 || currentSentenceIndex >= sentences.size) {
-            Log.w(tag, "speakCurrentSentence: index $currentSentenceIndex out of range")
+            AppLogger.w(tag, "speakCurrentSentence: index $currentSentenceIndex out of range")
             return
         }
         val sentence = sentences[currentSentenceIndex]
-        Log.d(tag, "speakCurrentSentence: index=$currentSentenceIndex, text='${sentence.text.take(50)}'")
+        AppLogger.d(tag, "speakCurrentSentence: index=$currentSentenceIndex, text='${sentence.text.take(50)}'")
         ttsBus.setCurrentSentenceIndex(currentSentenceIndex)
         ttsEngine.speak(sentence.text, "sentence_$currentSentenceIndex")
-        Log.d(tag, "Speaking sentence $currentSentenceIndex/${sentences.size}")
+        AppLogger.d(tag, "Speaking sentence $currentSentenceIndex/${sentences.size}")
     }
 
     // -- TtsEngine.Callbacks (Council M11: already on main thread via AndroidTtsEngine) --
@@ -379,7 +381,7 @@ class TtsPlayer(
             invalidateState()
         } else {
             // End of chapter (Council M9: chapter-level MediaItem ends)
-            Log.i(tag, "End of chapter reached")
+            AppLogger.i(tag, "End of chapter reached")
             currentSentenceIndex = sentences.size // marks STATE_ENDED
             ttsBus.setCurrentSentenceIndex(-1)
             invalidateState()
@@ -388,7 +390,7 @@ class TtsPlayer(
     }
 
     override fun onError(utteranceId: String) {
-        Log.e(tag, "TTS error on $utteranceId — pausing")
+        AppLogger.e(tag, "TTS error on $utteranceId — pausing")
         pausePlayback()
     }
 

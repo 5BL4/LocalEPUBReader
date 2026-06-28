@@ -1,5 +1,6 @@
 package com.epubreader.app.core
 
+import com.epubreader.app.core.log.AppLogger
 import kotlinx.coroutines.CoroutineExceptionHandler
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -14,7 +15,7 @@ class AppCoroutineExceptionHandler @Inject constructor(
     private val errorChannel: ErrorChannel
 ) {
     val handler: CoroutineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
-        android.util.Log.e("EpubReader", "Uncaught coroutine exception", throwable)
+        AppLogger.e("EpubReader", "Uncaught coroutine exception", throwable)
         errorChannel.tryEmit(AppError(throwable.message ?: "Unexpected error", throwable))
     }
 }

@@ -15,5 +15,6 @@ data class ReaderUiState(
     val isSearchPanelOpen: Boolean = false,
     val isToolbarVisible: Boolean = false,
     val isSettingsPanelOpen: Boolean = false,
-    val isKnowledgePanelOpen: Boolean = false
+    val isKnowledgePanelOpen: Boolean = false,
+    val isProgressPanelOpen: Boolean = false
 )
