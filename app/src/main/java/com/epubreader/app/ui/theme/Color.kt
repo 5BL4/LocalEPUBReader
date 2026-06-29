@@ -4,6 +4,11 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 
+// Surface/Background colors are aligned with Readium's built-in theme colors
+// (dayBackgroundColor=#FFFFFF, nightBackgroundColor=#000000, sepiaBackgroundColor=#faf4e8).
+// Dark theme retains #1C1B1F to avoid OLED smearing (user decision).
+// Background vals are public for PreferencesMapper to pass to Readium.
+
 // Light Material3 palette
 private val LightPrimary = Color(0xFF1F6FEB)
 private val LightOnPrimary = Color.White
@@ -13,10 +18,10 @@ private val LightSecondary = Color(0xFF565F71)
 private val LightOnSecondary = Color.White
 private val LightSecondaryContainer = Color(0xFFDAE2F9)
 private val LightOnSecondaryContainer = Color(0xFF131C2B)
-private val LightSurface = Color(0xFFFFFBFE)
-private val LightOnSurface = Color(0xFF1C1B1F)
-private val LightBackground = Color(0xFFFFFBFE)
-private val LightOnBackground = Color(0xFF1C1B1F)
+val LightSurface = Color(0xFFFFFFFF)
+private val LightOnSurface = Color(0xFF121212)
+val LightBackground = Color(0xFFFFFFFF)
+private val LightOnBackground = Color(0xFF121212)
 private val LightError = Color(0xFFBA1A1A)
 private val LightOnError = Color.White
 
@@ -29,9 +34,9 @@ private val DarkSecondary = Color(0xFFBEC6DC)
 private val DarkOnSecondary = Color(0xFF283041)
 private val DarkSecondaryContainer = Color(0xFF3E4759)
 private val DarkOnSecondaryContainer = Color(0xFFDAE2F9)
-private val DarkSurface = Color(0xFF1C1B1F)
+val DarkSurface = Color(0xFF1C1B1F)
 private val DarkOnSurface = Color(0xFFE6E1E5)
-private val DarkBackground = Color(0xFF1C1B1F)
+val DarkBackground = Color(0xFF1C1B1F)
 private val DarkOnBackground = Color(0xFFE6E1E5)
 private val DarkError = Color(0xFFFFB4AB)
 private val DarkOnError = Color(0xFF690005)
@@ -45,9 +50,9 @@ private val SepiaSecondary = Color(0xFF6B5E40)
 private val SepiaOnSecondary = Color.White
 private val SepiaSecondaryContainer = Color(0xFFF5E2BB)
 private val SepiaOnSecondaryContainer = Color(0xFF241B05)
-private val SepiaSurface = Color(0xFFF4ECD8)
+val SepiaSurface = Color(0xFFFAF4E8)
 private val SepiaOnSurface = Color(0xFF5B4636)
-private val SepiaBackground = Color(0xFFF4ECD8)
+val SepiaBackground = Color(0xFFFAF4E8)
 private val SepiaOnBackground = Color(0xFF5B4636)
 private val SepiaError = Color(0xFFBA1A1A)
 private val SepiaOnError = Color.White

@@ -3,5 +3,7 @@
       Base XML theme used only for the launch window before Compose takes over.
       Compose Material3 theming is applied in Phase 2 (Bookshelf UI).
     -->
-    <style name="Theme.EpubReader" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.EpubReader" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FAF4E8</item>
+    </style>
 </resources>

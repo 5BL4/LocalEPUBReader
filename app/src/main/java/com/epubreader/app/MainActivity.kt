@@ -1,5 +1,6 @@
 package com.epubreader.app
 
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -33,6 +34,11 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Remove navigation bar scrim for three-button navigation (API 29+).
+        // Without this, a translucent scrim mismatches the reading background.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
         lifecycle.addObserver(syncTrigger)
         setContent {
             EpubReaderApp(preferencesRepository, errorChannel)

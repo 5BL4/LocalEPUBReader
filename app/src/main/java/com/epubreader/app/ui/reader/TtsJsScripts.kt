@@ -192,7 +192,7 @@ object TtsJsScripts {
         parent.removeChild(prev);
     }
     if (window.__epubTtsLastHighlightBlock && window.__epubTtsLastHighlightBlock.style) {
-        window.__epubTtsLastHighlightBlock.style.backgroundColor = '';
+        window.__epubTtsLastHighlightBlock.style.removeProperty('background-color');
     }
 
     var ranges = window.__epubTtsRanges;
@@ -206,7 +206,7 @@ object TtsJsScripts {
     // which can pull the viewport unpredictably in paginated layout.
     // The block-level approach is simpler and avoids this entirely.
     if (entry.block) {
-        entry.block.style.backgroundColor = '$color';
+        entry.block.style.setProperty('background-color', '$color', 'important');
         entry.block.style.overflowAnchor = 'none';
         entry.block.style.transition = 'background-color 0.15s ease';
         window.__epubTtsLastHighlightBlock = entry.block;
@@ -232,7 +232,7 @@ object TtsJsScripts {
     var ranges = window.__epubTtsRanges;
     if (ranges) {
         ranges.forEach(function(r) {
-            if (r.block) r.block.style.backgroundColor = '';
+            if (r.block) r.block.style.removeProperty('background-color');
         });
     }
 })();

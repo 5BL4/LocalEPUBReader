@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Notes
@@ -44,7 +45,8 @@ fun ReaderBottomBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp),
+                .height(48.dp)
+                .padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -52,35 +54,35 @@ fun ReaderBottomBar(
                 Icon(
                     Icons.Default.Menu,
                     contentDescription = stringResource(R.string.reader_toc),
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
             IconButton(onClick = onSearch) {
                 Icon(
                     Icons.Default.Search,
                     contentDescription = stringResource(R.string.reader_search),
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
             IconButton(onClick = onKnowledge) {
                 Icon(
                     Icons.AutoMirrored.Filled.Notes,
                     contentDescription = stringResource(R.string.reader_knowledge),
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
             IconButton(onClick = onProgress) {
                 Icon(
                     Icons.Default.Tune,
                     contentDescription = stringResource(R.string.reader_progress),
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
             IconButton(onClick = onSettings) {
                 Icon(
                     Icons.Default.Settings,
                     contentDescription = stringResource(R.string.reader_settings),
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }

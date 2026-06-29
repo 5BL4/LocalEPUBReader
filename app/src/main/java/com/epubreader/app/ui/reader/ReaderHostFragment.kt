@@ -8,6 +8,8 @@ import com.epubreader.app.core.log.AppLogger
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -98,6 +100,10 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
     private fun buildConfiguration(): EpubNavigatorFragment.Configuration =
         EpubNavigatorFragment.Configuration {
             servedAssets = listOf("fonts/.*")
+            // Disable Readium's automatic inset padding — it applies asymmetric system
+            // window insets (display cutout, rounded corners) as WebView padding, causing
+            // unequal left/right margins. The app handles immersive mode itself.
+            shouldApplyInsetsPadding = false
             registerJavascriptInterface("AndroidNativeApi") { link ->
                 if (link.mediaType?.isHtml == true) {
                     AndroidNativeApi(bridgeCallbackHolder)
@@ -115,6 +121,46 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
+        // Fixed system bar height padding — does NOT depend on dynamic insets.
+        // Rationale: under BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE, transient bars
+        // appear as a semi-transparent overlay WITHOUT changing window insets
+        // (systemBars() returns 0). Relying on insets means padding is removed
+        // and text gets occluded by the transient status/nav bars. Using fixed
+        // system resource dimensions keeps a safe reading area in all states
+        // (hidden / transient / visible), while still feeling immersive because
+        // the padding area shares the content background when bars are hidden.
+        val res = view.resources
+        val statusH = res.getIdentifier("status_bar_height", "dimen", "android")
+            .takeIf { it > 0 }?.let { res.getDimensionPixelSize(it) } ?: 0
+        val navH = res.getIdentifier("navigation_bar_height", "dimen", "android")
+            .takeIf { it > 0 }?.let { res.getDimensionPixelSize(it) } ?: 0
+
+        // Minimum safe bottom padding for gesture-navigation devices where
+        // navigation_bar_height may report 0 or a very small value.
+        val minBottomPadding = (16f * res.displayMetrics.density).toInt()
+
+        val basePaddingTop = statusH
+        val basePaddingBottom = maxOf(navH, minBottomPadding)
+
+        // Apply base padding immediately so the first frame is already safe.
+        view.setPadding(view.paddingLeft, basePaddingTop, view.paddingRight, basePaddingBottom)
+
+        // Keep the insets listener to supplement with displayCutout (notches,
+        // punch-holes, rounded corners) which can vary at runtime (e.g. foldables).
+        // Take the max of base system-bar padding and cutout so whichever is
+        // larger wins. We do NOT consume insets so children can still react.
+        ViewCompat.setOnApplyWindowInsetsListener(view) { v, insets ->
+            val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
+            v.setPadding(
+                maxOf(cutout.left, v.paddingLeft),
+                maxOf(cutout.top, basePaddingTop),
+                maxOf(cutout.right, v.paddingRight),
+                maxOf(cutout.bottom, basePaddingBottom)
+            )
+            insets
+        }
+
         val factory = viewModel?.navigatorFactory?.value
         if (factory != null && !navigatorAdded) {
             try {
@@ -247,6 +293,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                             viewModel?.onChapterChanged(href)
                             injectJsWithRetry(navigator, ReaderJsScripts.SELECTION_LISTENER, "selection listener")
                             injectJsWithRetry(navigator, ReaderJsScripts.CENTER_TAP_LISTENER, "center-tap listener")
+                            injectJsWithRetry(navigator, ReaderJsScripts.INJECT_READER_CSS, "reader css")
                         }
                 }
                 // M7: Commands collector — only after navigator is confirmed ready.
