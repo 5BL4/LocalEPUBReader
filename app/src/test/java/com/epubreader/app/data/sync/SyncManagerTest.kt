@@ -5,6 +5,7 @@ import com.epubreader.app.core.DispatchersProvider
 import com.epubreader.app.core.ErrorChannel
 import com.epubreader.app.core.PushAck
 import com.epubreader.app.core.Result
+import com.epubreader.app.core.StringProvider
 import com.epubreader.app.core.SyncCursor
 import com.epubreader.app.core.SyncPage
 import com.epubreader.app.core.Syncable
@@ -104,14 +105,16 @@ class SyncManagerTest {
         handlers: List<SyncEntityHandler> = listOf(createDefaultHandler()),
         cursorStore: SyncCursorStore = NoopSyncCursorStore(),
         testDispatcher: CoroutineDispatcher = UnconfinedTestDispatcher(),
-        errorChannel: ErrorChannel = ErrorChannel()
+        errorChannel: ErrorChannel = ErrorChannel(),
+        stringProvider: StringProvider = mockk(relaxed = true)
     ): SyncManager {
         return SyncManager(
             remoteDataSource = remote,
             handlers = handlers,
             cursorStore = cursorStore,
             dispatchers = TestDispatchersProvider(testDispatcher),
-            errorChannel = errorChannel
+            errorChannel = errorChannel,
+            stringProvider = stringProvider
         )
     }
 

@@ -1,5 +1,7 @@
 package com.epubreader.app.ui.reader
 
+import com.epubreader.app.data.prefs.AppPreferences
+
 /**
  * JavaScript snippets injected into the EPUB WebView via
  * [org.readium.r2.navigator.epub.EpubNavigatorFragment.evaluateJavascript].
@@ -73,7 +75,7 @@ object ReaderJsScripts {
     """.trimIndent()
 
     /**
-     * Injects reader CSS for symmetric horizontal margins.
+     * Builds reader CSS JavaScript injection with dynamic typography rules.
      *
      * ## Responsibility Split
      * - **Top/Bottom padding**: handled at the Android View level via
@@ -82,6 +84,8 @@ object ReaderJsScripts {
      * - **Left/Right padding**: handled by this JS injection (overrides
      *   Readium's `--RS__pageGutter` and `max-width`/`margin` to ensure
      *   symmetric, user-adjustable horizontal margins).
+     * - **Typography rules (paragraph indent, spacing, line-height)**: generated
+     *   dynamically from [prefs] and injected into the <style> element.
      *
      * ## Problem
      * Readium CSS sets `body { padding: 0 var(--RS__pageGutter) !important;
@@ -96,15 +100,36 @@ object ReaderJsScripts {
      *    (Android View level handles top/bottom).
      * 2. **CSS fallback**: Stylesheet with Chrome 51-compatible features
      *    (`calc`, `vmin`, `var` — no `max()`/`env()`). First-frame baseline.
+     *    Dynamic typography rules are appended to this stylesheet.
      * 3. **MutationObserver**: Re-applies when Readium's `submitPreferences`
      *    changes `:root` inline style (`--USER__pageMargins`).
      * 4. **Resize listener**: Re-applies on orientation change.
+     *
+     * ## Idempotency
+     * The &lt;style&gt; element is ALWAYS removed and re-created (to pick up
+     * updated CSS values from changed prefs). The MutationObserver and resize
+     * listener are only created ONCE (guard on `window.__epubMarginObserver`).
      *
      * ## Diagnostics
      * Logs to `Android.log` at key points to verify JS execution and
      * computed values. Check logcat for "ReaderMargin" tag.
      */
-    val INJECT_READER_CSS: String = """
+    fun buildReaderCss(prefs: AppPreferences): String {
+        val defaultLineSpacing = 1.4f
+        val rules = mutableListOf<String>()
+        if (prefs.paragraphIndent != 0f) {
+            rules.add("body p { text-indent: ${prefs.paragraphIndent}em !important; }")
+            rules.add("h1+p,h2+p,h3+p,h4+p,h5+p,h6+p { text-indent: 0 !important; }")
+        }
+        if (prefs.paragraphSpacing != 0f) {
+            rules.add("body p { margin-bottom: ${prefs.paragraphSpacing}em !important; }")
+        }
+        if (prefs.lineSpacing != defaultLineSpacing) {
+            rules.add("body p { line-height: ${prefs.lineSpacing} !important; }")
+        }
+        val typographyCss = if (rules.isEmpty()) "" else rules.joinToString("\n")
+
+        return """
 (function() {
     try { Android.log('ReaderMargin: JS injection started'); } catch(e) {}
 
@@ -146,12 +171,7 @@ object ReaderJsScripts {
         } catch(e) {}
     }
 
-    if (window.__epubMarginObserver) {
-        applyReaderMargins();
-        return;
-    }
-
-    // CSS fallback (Chrome 51 compatible — no max/env)
+    // ALWAYS update <style> — CSS rules may have changed due to preference updates
     var existing = document.getElementById('__epubReaderCss');
     if (existing) existing.remove();
 
@@ -165,31 +185,34 @@ object ReaderJsScripts {
         '  padding-left: calc(10vmin * var(--USER__pageMargins, 1.0)) !important;',
         '  padding-right: calc(10vmin * var(--USER__pageMargins, 1.0)) !important;',
         '  padding-top: 0 !important; padding-bottom: 0 !important;',
-        '}'
+        '}',
+        '$typographyCss'
     ].join('\n');
     document.head.appendChild(style);
 
-    // MutationObserver — re-apply when Readium changes :root style
-    var prefsTimer = null;
-    var observer = new MutationObserver(function() {
-        if (prefsTimer) clearTimeout(prefsTimer);
-        prefsTimer = setTimeout(applyReaderMargins, 50);
-    });
-    observer.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ['style']
-    });
-    window.__epubMarginObserver = observer;
+    // MutationObserver + resize listener — only create once
+    if (!window.__epubMarginObserver) {
+        var prefsTimer = null;
+        var observer = new MutationObserver(function() {
+            if (prefsTimer) clearTimeout(prefsTimer);
+            prefsTimer = setTimeout(applyReaderMargins, 50);
+        });
+        observer.observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['style']
+        });
+        window.__epubMarginObserver = observer;
 
-    // Resize listener — re-apply on orientation change
-    var resizeTimer = null;
-    window.addEventListener('resize', function() {
-        if (resizeTimer) clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(applyReaderMargins, 100);
-    }, { passive: true });
+        var resizeTimer = null;
+        window.addEventListener('resize', function() {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(applyReaderMargins, 100);
+        }, { passive: true });
+    }
 
     applyReaderMargins();
     try { Android.log('ReaderMargin: JS injection complete'); } catch(e) {}
 })();
-    """.trimIndent()
+        """.trimIndent()
+    }
 }

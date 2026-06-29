@@ -12,14 +12,6 @@ import org.readium.r2.navigator.preferences.Theme
 import org.readium.r2.navigator.preferences.Color as ReadiumColor
 
 fun AppPreferences.toEpubPreferences(systemDark: Boolean = false): EpubPreferences {
-    // lineHeight, paragraphSpacing and paragraphIndent only take effect when
-    // publisher styles are disabled. Turn them off only when the user has
-    // customised paragraph typography, so the default rendering still respects
-    // the publisher's CSS.
-    val customTypography = lineSpacing != DEFAULT_LINE_SPACING ||
-        paragraphSpacing != 0f ||
-        paragraphIndent != 0f
-
     // Align Readium WebView background with Compose surface/background color.
     // Dark uses #1C1B1F (not Readium's default #000000) to avoid OLED smearing.
     val readiumBgColor = when (theme) {
@@ -32,15 +24,12 @@ fun AppPreferences.toEpubPreferences(systemDark: Boolean = false): EpubPreferenc
     return EpubPreferences(
         fontFamily = fontFamily.toFontFamily(),
         fontSize = (fontSize / 16.0).coerceIn(0.5, 3.0),
-        lineHeight = lineSpacing.toDouble(),
         backgroundColor = ReadiumColor(readiumBgColor.toArgb()),
         textColor = null,
         theme = theme.toReadiumTheme(systemDark),
         scroll = scroll,
-        paragraphSpacing = paragraphSpacing.toDouble(),
-        paragraphIndent = paragraphIndent.toDouble(),
         pageMargins = pageMargins.toDouble(),
-        publisherStyles = if (customTypography) false else null
+        publisherStyles = null
     )
 }
 
@@ -57,4 +46,4 @@ private fun ThemeMode.toReadiumTheme(systemDark: Boolean): Theme = when (this) {
     ThemeMode.SYSTEM -> if (systemDark) Theme.DARK else Theme.LIGHT
 }
 
-private const val DEFAULT_LINE_SPACING = 1.4f
+

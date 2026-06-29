@@ -177,22 +177,22 @@ fun LogViewerScreen(
                 FilterChip(
                     selected = selectedLevel == LogLevel.D,
                     onClick = { selectedLevel = if (selectedLevel == LogLevel.D) null else LogLevel.D },
-                    label = { Text("D") }
+                    label = { Text(stringResource(R.string.log_level_d)) }
                 )
                 FilterChip(
                     selected = selectedLevel == LogLevel.I,
                     onClick = { selectedLevel = if (selectedLevel == LogLevel.I) null else LogLevel.I },
-                    label = { Text("I") }
+                    label = { Text(stringResource(R.string.log_level_i)) }
                 )
                 FilterChip(
                     selected = selectedLevel == LogLevel.W,
                     onClick = { selectedLevel = if (selectedLevel == LogLevel.W) null else LogLevel.W },
-                    label = { Text("W") }
+                    label = { Text(stringResource(R.string.log_level_w)) }
                 )
                 FilterChip(
                     selected = selectedLevel == LogLevel.E,
                     onClick = { selectedLevel = if (selectedLevel == LogLevel.E) null else LogLevel.E },
-                    label = { Text("E") }
+                    label = { Text(stringResource(R.string.log_level_e)) }
                 )
             }
 

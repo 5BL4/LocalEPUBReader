@@ -460,7 +460,7 @@ fun ReaderScreen(
                                 modifier = Modifier.size(22.dp)
                             )
                             else -> Text(
-                                "听",
+                                stringResource(R.string.reader_listen),
                                 style = MaterialTheme.typography.titleMedium
                             )
                         }

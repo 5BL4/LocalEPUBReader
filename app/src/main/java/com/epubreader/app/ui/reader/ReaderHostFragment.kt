@@ -15,6 +15,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.epubreader.app.R
+import com.epubreader.app.data.prefs.AppPreferences
 import dagger.hilt.android.AndroidEntryPoint
 
 import kotlinx.coroutines.CancellationException
@@ -24,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.readium.r2.navigator.epub.EpubNavigatorFactory
@@ -207,11 +209,20 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                     }
                 }
                 launch {
-                    vm.epubPreferences.collectLatest { prefs ->
-                        val navigator = childFragmentManager
-                            .findFragmentByTag(NAVIGATOR_TAG) as? EpubNavigatorFragment
-                        navigator?.submitPreferences(prefs)
-                    }
+                    vm.epubPreferences
+                        .drop(1)
+                        .collectLatest { prefs ->
+                            val navigator = childFragmentManager
+                                .findFragmentByTag(NAVIGATOR_TAG) as? EpubNavigatorFragment
+                            if (navigator != null) {
+                                navigator.submitPreferences(prefs)
+                                delay(500)
+                                val currentPrefs = vm.appPreferences.value
+                                injectJsWithRetry(navigator, ReaderJsScripts.SELECTION_LISTENER, "selection listener (prefs)", retries = 8, delayMs = 300)
+                                injectJsWithRetry(navigator, ReaderJsScripts.CENTER_TAP_LISTENER, "center-tap listener (prefs)", retries = 8, delayMs = 300)
+                                injectJsWithRetry(navigator, ReaderJsScripts.buildReaderCss(currentPrefs), "reader css (prefs)", retries = 8, delayMs = 300)
+                            }
+                        }
                 }
             }
         }
@@ -293,7 +304,8 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                             viewModel?.onChapterChanged(href)
                             injectJsWithRetry(navigator, ReaderJsScripts.SELECTION_LISTENER, "selection listener")
                             injectJsWithRetry(navigator, ReaderJsScripts.CENTER_TAP_LISTENER, "center-tap listener")
-                            injectJsWithRetry(navigator, ReaderJsScripts.INJECT_READER_CSS, "reader css")
+                            val currentPrefs = viewModel?.appPreferences?.value ?: AppPreferences()
+                            injectJsWithRetry(navigator, ReaderJsScripts.buildReaderCss(currentPrefs), "reader css")
                         }
                 }
                 // M7: Commands collector — only after navigator is confirmed ready.
@@ -400,9 +412,11 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
     private suspend fun injectJsWithRetry(
         navigator: EpubNavigatorFragment,
         script: String,
-        label: String
+        label: String,
+        retries: Int = 5,
+        delayMs: Long = 200
     ): Boolean {
-        repeat(5) { attempt ->
+        repeat(retries) { attempt ->
             try {
                 val result = navigator.evaluateJavascript(script)
                 if (result != null) {
@@ -411,15 +425,15 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                     return true
                 }
                 // result is null — page fragment not attached yet
-                if (attempt < 4) delay(200)
+                if (attempt < retries - 1) delay(delayMs)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 AppLogger.d("ReaderHostFragment", "$label attempt ${attempt + 1} failed", e)
-                if (attempt < 4) delay(200)
+                if (attempt < retries - 1) delay(delayMs)
             }
         }
-        AppLogger.w("ReaderHostFragment", "$label: WebView not ready after 5 retries")
+        AppLogger.w("ReaderHostFragment", "$label: WebView not ready after $retries retries")
         return false
     }
 

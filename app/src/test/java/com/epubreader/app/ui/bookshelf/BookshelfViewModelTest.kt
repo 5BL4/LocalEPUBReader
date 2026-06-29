@@ -46,9 +46,9 @@ class BookshelfViewModelTest {
         every { bookRepo.observeBooks() } returns flowOf(books)
 
         val errorChannel = ErrorChannel()
-        val exceptionHandler = AppCoroutineExceptionHandler(errorChannel)
         val stringProvider = mockk<StringProvider>(relaxed = true)
         every { stringProvider.get(any()) } returns "error message"
+        val exceptionHandler = AppCoroutineExceptionHandler(errorChannel, stringProvider)
 
         return BookshelfViewModel(
             bookRepository = bookRepo,

@@ -95,7 +95,7 @@ class BookshelfViewModel @Inject constructor(
             val result = bookRepository.reparseMetadata(uuid)
             result.onFailure { cause, msg ->
                 errorChannel.tryEmit(
-                    AppError(msg ?: cause.message ?: "Reparse failed", cause)
+                    AppError(msg ?: cause.message ?: stringProvider.get(R.string.error_reparse_failed), cause)
                 )
             }
         }
@@ -109,7 +109,7 @@ class BookshelfViewModel @Inject constructor(
                 onSuccess = { /* Room Flow auto-updates uiState */ },
                 onFailure = { cause, _ ->
                     errorChannel.tryEmit(
-                        AppError(cause.message ?: "Delete failed", cause)
+                        AppError(cause.message ?: stringProvider.get(R.string.error_delete_failed), cause)
                     )
                 }
             )

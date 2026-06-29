@@ -172,16 +172,16 @@ fun TtsControlPanel(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 TextButton(onClick = { onSleepTimer(5 * 60_000L) }) {
-                    Text("5m")
+                    Text(stringResource(R.string.tts_sleep_minutes, 5))
                 }
                 TextButton(onClick = { onSleepTimer(10 * 60_000L) }) {
-                    Text("10m")
+                    Text(stringResource(R.string.tts_sleep_minutes, 10))
                 }
                 TextButton(onClick = { onSleepTimer(15 * 60_000L) }) {
-                    Text("15m")
+                    Text(stringResource(R.string.tts_sleep_minutes, 15))
                 }
                 TextButton(onClick = { onSleepTimer(30 * 60_000L) }) {
-                    Text("30m")
+                    Text(stringResource(R.string.tts_sleep_minutes, 30))
                 }
                 TextButton(onClick = onSleepTimerEndOfChapter) {
                     Text(stringResource(R.string.tts_sleep_chapter_end))

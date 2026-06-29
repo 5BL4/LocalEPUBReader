@@ -1,5 +1,6 @@
 package com.epubreader.app.ui.reader
 
+import com.epubreader.app.data.prefs.AppPreferences
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -82,5 +83,38 @@ class ReaderJsScriptsTest {
                 ReaderJsScripts.CENTER_TAP_LISTENER.contains("0.67"),
             "Center-tap listener must restrict to horizontal center third"
         )
+    }
+
+    @Test
+    fun `buildReaderCss with default prefs contains margin rules but no typography rules`() {
+        val css = ReaderJsScripts.buildReaderCss(AppPreferences())
+        assertTrue(css.contains("--RS__pageGutter"), "CSS must always contain margin gutter override")
+        assertTrue(css.contains("padding-left"), "CSS must always contain horizontal padding")
+        assertFalse(css.contains("text-indent"), "Default prefs should not inject text-indent")
+        assertFalse(css.contains("body p { margin-bottom:"), "Default prefs should not inject paragraph margin-bottom")
+        assertFalse(css.contains("body p { line-height:"), "Default prefs should not inject line-height")
+    }
+
+    @Test
+    fun `buildReaderCss with paragraph indent injects text-indent rule`() {
+        val prefs = AppPreferences(paragraphIndent = 2.0f)
+        val css = ReaderJsScripts.buildReaderCss(prefs)
+        assertTrue(css.contains("text-indent: 2.0em"), "CSS must contain text-indent with correct em value")
+        assertTrue(css.contains("h1+p"), "CSS must suppress indent on first paragraph after heading")
+    }
+
+    @Test
+    fun `buildReaderCss with paragraph spacing injects margin-bottom rule`() {
+        val prefs = AppPreferences(paragraphSpacing = 1.5f)
+        val css = ReaderJsScripts.buildReaderCss(prefs)
+        assertTrue(css.contains("margin-bottom: 1.5em"), "CSS must contain margin-bottom with correct em value")
+    }
+
+    @Test
+    fun `buildReaderCss with non-default line spacing injects line-height rule`() {
+        val prefs = AppPreferences(lineSpacing = 1.8f)
+        val css = ReaderJsScripts.buildReaderCss(prefs)
+        assertTrue(css.contains("line-height: 1.8"), "CSS must contain line-height with correct value")
+        assertTrue(css.contains("body p"), "line-height must target body p, not body")
     }
 }

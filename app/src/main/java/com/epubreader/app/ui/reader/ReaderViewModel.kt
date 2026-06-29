@@ -806,7 +806,7 @@ class ReaderViewModel @Inject constructor(
                     result.fold(
                         onSuccess = { /* highlights flow auto-updates decorations */ },
                         onFailure = { cause, _ ->
-                            errorChannel.tryEmit(AppError(message = cause.message ?: "Failed to add highlight", cause = cause))
+                            errorChannel.tryEmit(AppError(message = cause.message ?: stringProvider.get(R.string.error_add_highlight_failed), cause = cause))
                         }
                     )
                 }
@@ -832,7 +832,7 @@ class ReaderViewModel @Inject constructor(
                     result.fold(
                         onSuccess = { },
                         onFailure = { cause, _ ->
-                            errorChannel.tryEmit(AppError(message = cause.message ?: "Failed to add bookmark", cause = cause))
+                            errorChannel.tryEmit(AppError(message = cause.message ?: stringProvider.get(R.string.error_add_bookmark_failed), cause = cause))
                         }
                     )
                 }
@@ -901,12 +901,12 @@ class ReaderViewModel @Inject constructor(
                             pendingNoteText = ""
                         },
                         onFailure = { cause, _ ->
-                            errorChannel.tryEmit(AppError(message = cause.message ?: "Failed to add note", cause = cause))
+                            errorChannel.tryEmit(AppError(message = cause.message ?: stringProvider.get(R.string.error_add_note_failed), cause = cause))
                         }
                     )
                 },
                 onFailure = { cause, _ ->
-                    errorChannel.tryEmit(AppError(message = cause.message ?: "Failed to add highlight", cause = cause))
+                    errorChannel.tryEmit(AppError(message = cause.message ?: stringProvider.get(R.string.error_add_highlight_failed), cause = cause))
                 }
             )
         }
@@ -1256,7 +1256,7 @@ class ReaderViewModel @Inject constructor(
             result.fold(
                 onSuccess = { /* flows auto-update knowledgeState */ },
                 onFailure = { cause, _ ->
-                    errorChannel.tryEmit(AppError(message = cause.message ?: "Failed to delete", cause = cause))
+                    errorChannel.tryEmit(AppError(message = cause.message ?: stringProvider.get(R.string.error_delete_failed), cause = cause))
                 }
             )
         }
@@ -1274,7 +1274,7 @@ class ReaderViewModel @Inject constructor(
                 val notesList = noteRepository.getByBook(bookUuid).getOrNull() ?: emptyList()
                 val bookmarks = bookmarkRepository.getByBook(bookUuid).getOrNull() ?: emptyList()
                 val book = bookRepository.getBook(bookUuid).getOrNull()
-                val bookTitle = book?.title ?: "Untitled"
+                val bookTitle = book?.title ?: stringProvider.get(R.string.export_untitled)
 
                 // Build ExportTocItem list from parallel tocLinks + uiState.toc
                 val tocItems = _uiState.value.toc
@@ -1316,7 +1316,7 @@ class ReaderViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _exportState.value = ExportState.Error(message = e.message ?: "Export failed")
+                _exportState.value = ExportState.Error(message = e.message ?: stringProvider.get(R.string.error_export_failed))
             }
         }
     }

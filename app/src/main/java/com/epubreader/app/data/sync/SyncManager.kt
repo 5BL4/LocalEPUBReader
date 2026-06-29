@@ -1,9 +1,11 @@
 package com.epubreader.app.data.sync
 
+import com.epubreader.app.R
 import com.epubreader.app.core.AppError
 import com.epubreader.app.core.DispatchersProvider
 import com.epubreader.app.core.ErrorChannel
 import com.epubreader.app.core.Result
+import com.epubreader.app.core.StringProvider
 import com.epubreader.app.core.SyncCursor
 import com.epubreader.app.core.sync.SyncCursorStore
 import com.epubreader.app.core.sync.SyncError
@@ -38,7 +40,8 @@ class SyncManager @Inject constructor(
     private val handlers: List<@JvmSuppressWildcards SyncEntityHandler>,
     private val cursorStore: SyncCursorStore,
     private val dispatchers: DispatchersProvider,
-    private val errorChannel: ErrorChannel
+    private val errorChannel: ErrorChannel,
+    private val stringProvider: StringProvider
 ) {
     private val mutex = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + dispatchers.sync)
@@ -100,7 +103,7 @@ class SyncManager @Inject constructor(
                         throw e  // re-throw, don't swallow (NEVER #26)
                     } catch (e: Exception) {
                         errors.add(SyncError(handler.type, e))
-                        errorChannel.tryEmit(AppError("Sync failed for ${handler.type}: ${e.message}", e))
+                        errorChannel.tryEmit(AppError(stringProvider.get(R.string.error_sync_failed, handler.type, e.message ?: ""), e))
                     }
                 }
 
@@ -116,7 +119,7 @@ class SyncManager @Inject constructor(
                         throw e  // re-throw, don't swallow (NEVER #26)
                     } catch (e: Exception) {
                         errors.add(SyncError(SyncType.BOOK, e))
-                        errorChannel.tryEmit(AppError("Deferred markSynced failed: ${e.message}", e))
+                        errorChannel.tryEmit(AppError(stringProvider.get(R.string.error_sync_mark_failed, e.message ?: ""), e))
                     }
                 }
 

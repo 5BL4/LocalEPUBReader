@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">EpubReader</string>
+    <string name="app_name" translatable="false">EpubReader</string>
     <string name="bookshelf_title">Bookshelf</string>
     <string name="bookshelf_empty">No books yet. Tap + to import an EPUB.</string>
     <string name="bookshelf_import">Import EPUB</string>
@@ -120,4 +120,23 @@
     <string name="log_viewer_filter_all">All</string>
     <string name="log_viewer_count">%1$d entries</string>
     <string name="log_viewer_empty">No logs yet</string>
+
+    <!-- v0.9.4: Error fallback messages (extracted from hardcoded strings) -->
+    <string name="error_add_highlight_failed">Failed to add highlight</string>
+    <string name="error_add_bookmark_failed">Failed to add bookmark</string>
+    <string name="error_add_note_failed">Failed to add note</string>
+    <string name="error_delete_failed">Failed to delete</string>
+    <string name="error_reparse_failed">Reparse failed</string>
+    <string name="error_export_failed">Export failed</string>
+    <string name="error_sync_failed">Sync failed for %1$s: %2$s</string>
+    <string name="error_sync_mark_failed">Deferred markSynced failed: %1$s</string>
+    <string name="error_unexpected">Unexpected error</string>
+    <string name="export_untitled">Untitled</string>
+    <string name="tts_sleep_minutes">%1$dm</string>
+
+    <!-- v0.9.4: Log level labels (standard technical abbreviations, not translatable) -->
+    <string name="log_level_d" translatable="false">D</string>
+    <string name="log_level_i" translatable="false">I</string>
+    <string name="log_level_w" translatable="false">W</string>
+    <string name="log_level_e" translatable="false">E</string>
 </resources>
