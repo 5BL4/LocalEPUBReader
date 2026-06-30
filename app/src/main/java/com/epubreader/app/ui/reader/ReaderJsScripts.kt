@@ -75,6 +75,42 @@ object ReaderJsScripts {
     """.trimIndent()
 
     /**
+     * Injects a scroll listener that notifies native when the user scrolls near
+     * the bottom of the document — used to trigger auto-chapter-advance in scroll mode.
+     * Idempotent (checks `window.__epubScrollListener`).
+     *
+     * The payload JSON includes href, scroll position, direction, and
+     * distance-to-bottom so the native side can apply direction-aware guards.
+     */
+    val SCROLL_LISTENER: String = """
+(function() {
+    if (window.__epubScrollListener) return;
+    var origin = window.location.origin;
+    window.__epubScrollListener = true;
+    var lastScrollY = 0;
+    var isScrollingDown = true;
+    window.addEventListener('scroll', function() {
+        var sy = window.scrollY || window.pageYOffset || 0;
+        var ih = window.innerHeight;
+        var sh = document.documentElement.scrollHeight || document.body.scrollHeight || 0;
+        isScrollingDown = sy > lastScrollY;
+        lastScrollY = sy;
+        if (window.AndroidNativeApi && window.AndroidNativeApi.onScrollNearBottom) {
+            var distanceToBottom = sh - (sy + ih);
+            window.AndroidNativeApi.onScrollNearBottom(origin, JSON.stringify({
+                href: window.location.pathname,
+                scrollY: sy,
+                innerHeight: ih,
+                scrollHeight: sh,
+                direction: isScrollingDown ? "down" : "up",
+                distanceToBottom: distanceToBottom
+            }));
+        }
+    }, { passive: true });
+})();
+    """.trimIndent()
+
+    /**
      * Builds reader CSS JavaScript injection with dynamic typography rules.
      *
      * ## Responsibility Split

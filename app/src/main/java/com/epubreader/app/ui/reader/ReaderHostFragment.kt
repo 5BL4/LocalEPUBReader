@@ -520,6 +520,11 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
         viewModel?.onFirstVisibleBlock(json)
     }
 
+    // P0: Scroll-mode auto-chapter-advance
+    override fun onScrollNearBottom(payload: String) {
+        viewModel?.requestNextChapter(payload)
+    }
+
     // -- EpubNavigatorFragment.Listener --
 
     override fun onExternalLinkActivated(url: AbsoluteUrl) {

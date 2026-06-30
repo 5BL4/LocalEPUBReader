@@ -298,6 +298,24 @@ class ReaderViewModel @Inject constructor(
     @Volatile
     private var currentChapterHref: String = ""
 
+    /** P0: Href that triggered the last auto-scroll chapter advance. */
+    @Volatile
+    private var autoScrollTriggerHref: String? = null
+
+    // -- P0: Direction-aware auto-scroll guard (fixes back-and-forth death loop) --
+
+    @Volatile
+    private var suppressAutoNextForHref: String? = null
+
+    @Volatile
+    private var suppressAutoNextUntilMs: Long = 0L
+
+    @Volatile
+    private var autoScrollLastTriggerMs: Long = 0L
+
+    @Volatile
+    private var autoScrollPendingTargetHref: String? = null
+
     internal var publication: Publication? = null
         private set
 
@@ -1695,12 +1713,60 @@ class ReaderViewModel @Inject constructor(
     }
 
     /**
+     * P0: Returns the reading-order index of [href], or -1 if not found.
+     * Uses [normalizeHref] for consistent comparison with reading-order entries.
+     */
+    private fun readingOrderIndex(href: String): Int {
+        val pub = publication ?: return -1
+        if (href.isBlank()) return -1
+        val normalized = normalizeHref(href)
+        return pub.readingOrder.indexOfFirst {
+            normalizeHref(it.href.toString()) == normalized
+        }
+    }
+
+    /**
      * Called by Fragment when href changes (Oracle M7).
      * If TTS is playing and href changed due to user navigation (not TTS-driven),
      * stop TTS and re-extract for the new chapter.
      */
     fun onChapterChanged(href: String) {
+        val oldIndex = readingOrderIndex(currentChapterHref)
+        val newIndex = readingOrderIndex(href)
+        val now = android.os.SystemClock.elapsedRealtime()
+
+        val direction = when {
+            oldIndex >= 0 && newIndex >= 0 && newIndex > oldIndex -> "FORWARD"
+            oldIndex >= 0 && newIndex >= 0 && newIndex < oldIndex -> "BACKWARD"
+            else -> "NONE"
+        }
+        AppLogger.i("AutoScroll", "onChapterChanged old='${currentChapterHref}' new='$href' dir=$direction oldIdx=$oldIndex newIdx=$newIndex")
+
         currentChapterHref = href
+
+        if (!isTtsNavigating) {
+            val newHrefNormalized = normalizeHref(href)
+            when (direction) {
+                "BACKWARD" -> {
+                    suppressAutoNextForHref = newHrefNormalized
+                    suppressAutoNextUntilMs = now + BACKWARD_SUPPRESS_MS
+                    autoScrollPendingTargetHref = null
+                    AppLogger.d("AutoScroll", "BACKWARD: suppress auto-next for $newHrefNormalized until +${BACKWARD_SUPPRESS_MS}ms")
+                }
+                "FORWARD" -> {
+                    if (autoScrollPendingTargetHref == newHrefNormalized) {
+                        autoScrollPendingTargetHref = null
+                        AppLogger.d("AutoScroll", "FORWARD: reached pending target $newHrefNormalized, cleared pending")
+                    }
+                }
+                else -> {
+                    autoScrollPendingTargetHref = null
+                }
+            }
+        }
+
+        autoScrollTriggerHref = null
+
         if (isTtsNavigating) {
             isTtsNavigating = false
             // Fix C: re-arm isTtsStarting to suppress navigator.go() for the first
@@ -1735,6 +1801,42 @@ class ReaderViewModel @Inject constructor(
             _commands.tryEmit(ReaderCommand.ClearTtsHighlight)
             _commands.tryEmit(ReaderCommand.ExtractSentences)
         }
+    }
+
+    // -- P0: Auto-scroll chapter advance (direction-aware, with anti-burst guard) --
+
+    fun requestNextChapter(payload: String = "") {
+        if (!appPreferences.value.scroll) return
+        if (isTtsNavigating) return
+        if (ttsPlaybackState.value is TtsPlaybackState.Playing) return
+
+        val now = android.os.SystemClock.elapsedRealtime()
+        val currentHref = normalizeHref(currentChapterHref)
+
+        if (suppressAutoNextForHref != null && currentHref == suppressAutoNextForHref && now < suppressAutoNextUntilMs) {
+            AppLogger.d("AutoScroll", "requestNextChapter suppressed (BACKWARD cooldown) href=$currentHref remaining=${suppressAutoNextUntilMs - now}ms")
+            return
+        }
+
+        if (now - autoScrollLastTriggerMs < AUTO_SCROLL_MIN_INTERVAL_MS) {
+            AppLogger.d("AutoScroll", "requestNextChapter suppressed (anti-burst) interval=${now - autoScrollLastTriggerMs}ms")
+            return
+        }
+
+        val pub = publication ?: return
+        val nextLink = nextReadingOrderLink(pub, currentChapterHref) ?: return
+        val nextHref = normalizeHref(nextLink.href.toString())
+
+        if (autoScrollPendingTargetHref == nextHref) {
+            AppLogger.d("AutoScroll", "requestNextChapter suppressed (already pending) target=$nextHref")
+            return
+        }
+
+        autoScrollLastTriggerMs = now
+        autoScrollPendingTargetHref = nextHref
+        autoScrollTriggerHref = currentChapterHref
+        AppLogger.i("AutoScroll", "requestNextChapter trigger from=$currentHref to=$nextHref payloadLen=${payload.length}")
+        _commands.tryEmit(ReaderCommand.NavigateToLink(nextLink))
     }
 
     /** Saves reading progress from current TTS sentence locator (M10). */
@@ -1811,6 +1913,10 @@ class ReaderViewModel @Inject constructor(
         private const val SEARCH_DECORATION_GROUP = "search"
         private const val TTS_HIGHLIGHT_GREY = "rgba(180,180,180,0.55)"
         private const val TTS_HIGHLIGHT_YELLOW = "#FFEB3B"
+
+        // -- P0: Auto-scroll timing constants --
+        private val BACKWARD_SUPPRESS_MS = 8_000L
+        private val AUTO_SCROLL_MIN_INTERVAL_MS = 1_500L
     }
 }
 

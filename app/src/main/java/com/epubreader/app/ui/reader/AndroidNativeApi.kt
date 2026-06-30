@@ -86,6 +86,16 @@ class AndroidNativeApi(private val callbackHolder: BridgeCallbackHolder) {
         cb.onFirstVisibleBlock(json)
     }
 
+    /**
+     * P0: Called by scroll listener JS when user scrolls near bottom.
+     * [payload] is a JSON string: {href, scrollY, innerHeight, scrollHeight, direction, distanceToBottom}
+     */
+    @JavascriptInterface
+    fun onScrollNearBottom(origin: String, payload: String) {
+        if (!isAllowedOrigin(origin)) return
+        callbackHolder.callback?.onScrollNearBottom(payload)
+    }
+
     companion object {
         /** Readium WebViewServer virtual hosts (verified from WebViewServer.kt). */
         val ALLOWED_ORIGINS = setOf("https://readium_package", "https://readium_assets")
@@ -111,6 +121,12 @@ interface BridgeCallback {
      * [json] is a JSON object or empty string. Parse on a background thread.
      */
     fun onFirstVisibleBlock(json: String)
+
+    /**
+     * P0: Called when user scrolls near bottom. [payload] is a JSON string
+     * with href, scrollY, innerHeight, scrollHeight, direction, distanceToBottom.
+     */
+    fun onScrollNearBottom(payload: String)
 }
 
 /**
