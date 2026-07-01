@@ -15,8 +15,8 @@ android {
         applicationId = "com.epubreader.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.9.5a"
+        versionCode = 15
+        versionName = "0.9.5b"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "zh-rCN")
