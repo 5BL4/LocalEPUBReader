@@ -31,6 +31,7 @@ import kotlinx.coroutines.launch
 import org.readium.r2.navigator.epub.EpubNavigatorFactory
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.readium.r2.navigator.epub.EpubPreferences
+import org.readium.r2.navigator.epub.continuous.ContinuousLogger
 import org.readium.r2.shared.ExperimentalReadiumApi
 import org.readium.r2.shared.util.AbsoluteUrl
 
@@ -113,6 +114,7 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
                     null
                 }
             }
+            continuousScroll = viewModel?.appPreferences?.value?.continuousScroll ?: false
         }
 
     override fun onCreateView(
@@ -230,6 +232,18 @@ class ReaderHostFragment : Fragment(), EpubNavigatorFragment.Listener, BridgeCal
 
     private fun setupNavigator(factory: EpubNavigatorFactory) {
         if (navigatorAdded) return
+
+        // Forward continuous-scroll log output to AppLogger's in-memory ring buffer
+        // so LogViewerScreen can display these logs even when logcat is encrypted.
+        ContinuousLogger.forwarder = { level, tag, msg, throwable ->
+            when (level) {
+                "d" -> if (throwable != null) AppLogger.d(tag, msg, throwable) else AppLogger.d(tag, msg)
+                "w" -> if (throwable != null) AppLogger.w(tag, msg, throwable) else AppLogger.w(tag, msg)
+                "i" -> if (throwable != null) AppLogger.i(tag, msg, throwable) else AppLogger.i(tag, msg)
+                "e" -> if (throwable != null) AppLogger.e(tag, msg, throwable) else AppLogger.e(tag, msg)
+                else -> AppLogger.d(tag, msg)
+            }
+        }
 
         childFragmentManager.fragmentFactory = factory.createFragmentFactory(
             initialLocator = viewModel?.initialLocator,

@@ -13,6 +13,7 @@ interface PreferencesRepository {
     suspend fun setParagraphIndent(value: Float)
     suspend fun setPageMargins(value: Float)
     suspend fun setScrollMode(value: Boolean)
+    suspend fun setContinuousScroll(value: Boolean)
     suspend fun setTtsRate(value: Float)
     suspend fun setTtsPitch(value: Float)
     suspend fun setTtsEngine(value: String?)

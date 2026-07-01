@@ -13,6 +13,7 @@ data class AppPreferences(
     val paragraphIndent: Float = 0f,
     val pageMargins: Float = 1f,
     val scroll: Boolean = false,
+    val continuousScroll: Boolean = false,
     val ttsRate: Float = 1.0f,
     val ttsPitch: Float = 1.0f,
     val ttsEngine: String? = null

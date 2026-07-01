@@ -53,6 +53,7 @@
     <string name="reader_settings_page_turn">翻页方式</string>
     <string name="reader_settings_pagination">分页</string>
     <string name="reader_settings_scroll">滚动</string>
+    <string name="reader_settings_continuous">连续</string>
 
     <!-- 文本选择 -->
     <string name="reader_selection_highlight">高亮</string>

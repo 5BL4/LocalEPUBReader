@@ -48,6 +48,7 @@
     <string name="reader_settings_page_turn">Page turn</string>
     <string name="reader_settings_pagination">Paginated</string>
     <string name="reader_settings_scroll">Scroll</string>
+    <string name="reader_settings_continuous">Continuous</string>
     <string name="reader_selection_highlight">Highlight</string>
     <string name="reader_selection_bookmark">Bookmark selection</string>
     <string name="reader_selection_copy">Copy</string>

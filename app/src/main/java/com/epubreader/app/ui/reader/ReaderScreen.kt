@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -71,7 +72,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.epubreader.app.R
 import com.epubreader.app.core.share.ShareEpubUtil
 import com.epubreader.app.core.log.AppLogger
+import com.epubreader.app.data.prefs.ScrollMode
 import com.epubreader.app.data.prefs.ThemeMode
+import com.epubreader.app.data.prefs.toScrollMode
 import com.epubreader.app.core.tts.TtsPlaybackState
 import com.epubreader.app.databinding.FragmentReaderHostContainerBinding
 import kotlinx.coroutines.CancellationException
@@ -356,6 +359,7 @@ fun ReaderScreen(
                         }
                         // More (right) — overflow dropdown
                         var showMoreMenu by remember { mutableStateOf(false) }
+                        val currentScrollMode = appPreferences.toScrollMode()
                         IconButton(
                             onClick = { showMoreMenu = true },
                             modifier = Modifier.size(36.dp)
@@ -369,19 +373,33 @@ fun ReaderScreen(
                                 expanded = showMoreMenu,
                                 onDismissRequest = { showMoreMenu = false }
                             ) {
+                                val selectMode: (ScrollMode) -> Unit = { mode ->
+                                    val scroll = mode != ScrollMode.PAGINATED
+                                    val continuousScroll = mode == ScrollMode.CONTINUOUS
+                                    viewModel.setScrollMode(scroll)
+                                    viewModel.setContinuousScroll(continuousScroll)
+                                    showMoreMenu = false
+                                }
                                 DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (appPreferences.scroll)
-                                                stringResource(R.string.reader_settings_pagination)
-                                            else
-                                                stringResource(R.string.reader_settings_scroll)
-                                        )
-                                    },
-                                    onClick = {
-                                        viewModel.setScrollMode(!appPreferences.scroll)
-                                        showMoreMenu = false
-                                    }
+                                    text = { Text(stringResource(R.string.reader_settings_pagination)) },
+                                    leadingIcon = if (currentScrollMode == ScrollMode.PAGINATED) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null,
+                                    onClick = { selectMode(ScrollMode.PAGINATED) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.reader_settings_scroll)) },
+                                    leadingIcon = if (currentScrollMode == ScrollMode.SCROLLED_PER_CHAPTER) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null,
+                                    onClick = { selectMode(ScrollMode.SCROLLED_PER_CHAPTER) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.reader_settings_continuous)) },
+                                    leadingIcon = if (currentScrollMode == ScrollMode.CONTINUOUS) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null,
+                                    onClick = { selectMode(ScrollMode.CONTINUOUS) }
                                 )
                             }
                         }
@@ -507,7 +525,7 @@ fun ReaderScreen(
                 paragraphSpacing = appPreferences.paragraphSpacing,
                 paragraphIndent = appPreferences.paragraphIndent,
                 pageMargins = appPreferences.pageMargins,
-                scroll = appPreferences.scroll,
+                scrollMode = appPreferences.toScrollMode(),
                 onFontSizeChange = { viewModel.setFontSize(it) },
                 onFontFamilyChange = { viewModel.setFontFamily(it) },
                 onThemeChange = { viewModel.setTheme(it) },
@@ -515,7 +533,14 @@ fun ReaderScreen(
                 onParagraphSpacingChange = { viewModel.setParagraphSpacing(it) },
                 onParagraphIndentChange = { viewModel.setParagraphIndent(it) },
                 onPageMarginsChange = { viewModel.setPageMargins(it) },
-                onScrollModeChange = { viewModel.setScrollMode(it) },
+                onScrollModeChange = { mode ->
+                    // Map the 3-state [ScrollMode] back to the underlying
+                    // (scroll, continuousScroll) pair on AppPreferences.
+                    val scroll = mode != ScrollMode.PAGINATED
+                    val continuousScroll = mode == ScrollMode.CONTINUOUS
+                    viewModel.setScrollMode(scroll)
+                    viewModel.setContinuousScroll(continuousScroll)
+                },
                 onDismiss = { viewModel.closeSettingsPanel() }
             )
         }

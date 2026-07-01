@@ -1,6 +1,8 @@
 package com.epubreader.app.ui.reader
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -11,8 +13,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Tune
@@ -34,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.epubreader.app.R
+import com.epubreader.app.data.prefs.ScrollMode
 import com.epubreader.app.data.prefs.ThemeMode
 
 /**
@@ -54,7 +59,7 @@ fun ReaderSettingsPanel(
     paragraphSpacing: Float,
     paragraphIndent: Float,
     pageMargins: Float,
-    scroll: Boolean,
+    scrollMode: ScrollMode,
     onFontSizeChange: (Float) -> Unit,
     onFontFamilyChange: (String) -> Unit,
     onThemeChange: (ThemeMode) -> Unit,
@@ -62,7 +67,7 @@ fun ReaderSettingsPanel(
     onParagraphSpacingChange: (Float) -> Unit,
     onParagraphIndentChange: (Float) -> Unit,
     onPageMarginsChange: (Float) -> Unit,
-    onScrollModeChange: (Boolean) -> Unit,
+    onScrollModeChange: (ScrollMode) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -300,18 +305,40 @@ fun ReaderSettingsPanel(
 
             SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                 SegmentedButton(
-                    selected = !scroll,
-                    onClick = { onScrollModeChange(false) },
-                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
+                    selected = (scrollMode == ScrollMode.PAGINATED),
+                    onClick = { onScrollModeChange(ScrollMode.PAGINATED) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3)
                 ) {
                     Text(stringResource(R.string.reader_settings_pagination))
                 }
                 SegmentedButton(
-                    selected = scroll,
-                    onClick = { onScrollModeChange(true) },
-                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
+                    selected = (scrollMode == ScrollMode.SCROLLED_PER_CHAPTER),
+                    onClick = { onScrollModeChange(ScrollMode.SCROLLED_PER_CHAPTER) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3)
                 ) {
                     Text(stringResource(R.string.reader_settings_scroll))
+                }
+                SegmentedButton(
+                    selected = (scrollMode == ScrollMode.CONTINUOUS),
+                    onClick = { onScrollModeChange(ScrollMode.CONTINUOUS) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3)
+                ) {
+                    // Small primary-colored dot flags the newly-introduced option.
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(stringResource(R.string.reader_settings_continuous))
+                        Spacer(Modifier.width(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .background(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    shape = CircleShape
+                                )
+                        )
+                    }
                 }
             }
 

@@ -24,6 +24,7 @@ class PreferencesRepositoryImpl @Inject constructor(
             paragraphIndent = p[PreferenceKeys.PARAGRAPH_INDENT] ?: 0f,
             pageMargins = p[PreferenceKeys.PAGE_MARGINS] ?: 1f,
             scroll = p[PreferenceKeys.SCROLL] ?: false,
+            continuousScroll = p[PreferenceKeys.CONTINUOUS_SCROLL] ?: false,
             ttsRate = p[PreferenceKeys.TTS_RATE] ?: 1.0f,
             ttsPitch = p[PreferenceKeys.TTS_PITCH] ?: 1.0f,
             ttsEngine = p[PreferenceKeys.TTS_ENGINE]
@@ -39,6 +40,7 @@ class PreferencesRepositoryImpl @Inject constructor(
     override suspend fun setParagraphIndent(value: Float) { dataStore.edit { it[PreferenceKeys.PARAGRAPH_INDENT] = value } }
     override suspend fun setPageMargins(value: Float) { dataStore.edit { it[PreferenceKeys.PAGE_MARGINS] = value } }
     override suspend fun setScrollMode(value: Boolean) { dataStore.edit { it[PreferenceKeys.SCROLL] = value } }
+    override suspend fun setContinuousScroll(value: Boolean) { dataStore.edit { it[PreferenceKeys.CONTINUOUS_SCROLL] = value } }
     override suspend fun setTtsRate(value: Float) { dataStore.edit { it[PreferenceKeys.TTS_RATE] = value } }
     override suspend fun setTtsPitch(value: Float) { dataStore.edit { it[PreferenceKeys.TTS_PITCH] = value } }
     override suspend fun setTtsEngine(value: String?) {

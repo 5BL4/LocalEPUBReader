@@ -15,8 +15,8 @@ android {
         applicationId = "com.epubreader.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.9.4"
+        versionCode = 14
+        versionName = "0.9.5a"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "zh-rCN")
@@ -126,6 +126,9 @@ dependencies {
     // flexmark (HTML->Markdown in Phase 5; locked now)
     implementation(libs.flexmark)
     implementation(libs.flexmark.html2md)
+
+    // RecyclerView (P0 spike: WebViewSpikeActivity — throwaway, remove after P2)
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
 
     // Unit tests
     testImplementation(platform(libs.junit.bom))

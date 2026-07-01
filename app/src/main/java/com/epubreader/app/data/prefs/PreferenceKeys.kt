@@ -16,6 +16,7 @@ internal object PreferenceKeys {
     val PARAGRAPH_INDENT = floatPreferencesKey("paragraph_indent")
     val PAGE_MARGINS = floatPreferencesKey("page_margins")
     val SCROLL = booleanPreferencesKey("scroll")
+    val CONTINUOUS_SCROLL = booleanPreferencesKey("continuous_scroll")
     val TTS_RATE = floatPreferencesKey("tts_rate")
     val TTS_PITCH = floatPreferencesKey("tts_pitch")
     val TTS_ENGINE = stringPreferencesKey("tts_engine")

@@ -1240,6 +1240,12 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    fun setContinuousScroll(value: Boolean) {
+        viewModelScope.launch(exceptionHandler.handler) {
+            preferencesRepository.setContinuousScroll(value)
+        }
+    }
+
     // -- Phase 5: Knowledge Panel --
 
     fun toggleKnowledgePanel() {

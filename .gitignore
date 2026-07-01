@@ -43,5 +43,8 @@ google-services.json
 # Readium source snapshot (clonedeps for local inspection)
 org/
 
+# Readium fork (composite build, P2 continuous scroll)
+modules/
+
 # Kotlin
 .kotlin/

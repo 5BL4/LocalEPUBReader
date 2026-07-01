@@ -44,6 +44,12 @@
             </intent-filter>
         </activity>
 
+        <!-- WebView Spike (throwaway P0 experiment) -->
+        <activity
+            android:name=".ui.spike.WebViewSpikeActivity"
+            android:exported="true"
+            android:theme="@style/Theme.EpubReader" />
+
         <!-- Phase 6: TTS Media3 service (NEVER #10, #16, #25) -->
         <service
             android:name=".media.TtsPlaybackService"
